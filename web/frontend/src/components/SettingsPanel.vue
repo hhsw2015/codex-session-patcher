@@ -2,15 +2,15 @@
   <div class="settings-panel">
     <n-space vertical size="large">
       <!-- AI 配置 -->
-      <n-card title="AI 配置" size="small">
+      <n-card :title="$t('settings.aiConfig')" size="small">
         <template #header-extra>
           <n-tag :type="settingsStore.aiEnabled ? 'success' : 'default'" size="small">
-            {{ settingsStore.aiEnabled ? '已启用' : '未启用' }}
+            {{ settingsStore.aiEnabled ? $t('common.enabled') : $t('common.disabled') }}
           </n-tag>
         </template>
 
         <n-space vertical>
-          <n-form-item label="启用 AI">
+          <n-form-item :label="$t('settings.aiEnabled')">
             <n-switch
               v-model:value="settingsStore.aiEnabled"
               @update:value="settingsStore.markChanged"
@@ -18,106 +18,103 @@
           </n-form-item>
 
           <n-collapse-transition :show="settingsStore.aiEnabled">
-            <n-form-item label="API Endpoint">
+            <n-form-item :label="$t('settings.apiEndpoint')">
               <n-input
                 v-model:value="settingsStore.aiEndpoint"
-                placeholder="https://api.openai.com/v1"
+                :placeholder="$t('settings.apiEndpointPlaceholder')"
                 @update:value="settingsStore.markChanged"
               />
               <template #feedback>
-                <span class="form-hint">支持 OpenAI 兼容接口（OpenAI / Ollama / OpenRouter 等）</span>
+                <span class="form-hint">{{ $t('settings.aiConfigDesc') }}</span>
               </template>
             </n-form-item>
 
-            <n-form-item label="API Key">
+            <n-form-item :label="$t('settings.apiKey')">
               <n-input
                 v-model:value="settingsStore.aiKey"
                 type="password"
                 show-password-on="click"
-                placeholder="sk-..."
+                :placeholder="$t('settings.apiKeyPlaceholder')"
                 @update:value="settingsStore.markChanged"
               />
-              <template #feedback>
-                <span class="form-hint">本地模型（如 Ollama）可留空</span>
-              </template>
             </n-form-item>
 
-            <n-form-item label="模型名称">
+            <n-form-item :label="$t('settings.modelName')">
               <n-input
                 v-model:value="settingsStore.aiModel"
-                placeholder="gpt-4o / deepseek-chat / ..."
+                :placeholder="$t('settings.modelNamePlaceholder')"
                 @update:value="settingsStore.markChanged"
               />
             </n-form-item>
           </n-collapse-transition>
 
           <n-alert type="info" :bordered="false">
-            AI 用于「提示词改写」和「会话清理」时的智能回复生成
+            {{ $t('enhance.promptRewriteDesc') }}
           </n-alert>
         </n-space>
       </n-card>
 
       <!-- 会话清理配置 -->
-      <n-card title="会话清理" size="small">
+      <n-card :title="$t('action.clean')" size="small">
         <n-space vertical>
-          <n-form-item label="启用 Claude Code 支持">
+          <n-form-item :label="$t('settings.claudeCodeEnabled')">
             <n-switch
               :value="settingsStore.claudeCodeEnabled"
               @update:value="settingsStore.setClaudeCodeEnabled"
             />
             <template #feedback>
-              <span class="form-hint">开启后可管理 Claude Code 会话、使用 Claude Code CTF 模式</span>
+              <span class="form-hint">{{ $t('settings.claudeCodeEnabledHint') }}</span>
             </template>
           </n-form-item>
 
-          <n-form-item label="显示全部会话">
+          <n-form-item :label="$t('settings.showAllSessions')">
             <n-switch
               :value="settingsStore.showAllSessions"
               @update:value="settingsStore.setShowAllSessions"
             />
             <template #feedback>
-              <span class="form-hint">关闭时仅显示有拒绝和已清理的会话，减少列表干扰</span>
+              <span class="form-hint">{{ $t('settings.showAllSessionsHint') }}</span>
             </template>
           </n-form-item>
 
-          <n-form-item label="默认替换文本">
+          <n-form-item :label="$t('settings.mockResponse')">
             <n-input
               v-model:value="settingsStore.mockResponse"
               type="textarea"
               :rows="3"
-              placeholder="检测到拒绝回复时，替换为此文本"
+              :placeholder="$t('settings.mockResponsePlaceholder')"
               @update:value="settingsStore.markChanged"
             />
             <template #feedback>
-              <span class="form-hint">未启用 AI 时使用此固定文本替换拒绝内容</span>
+              <span class="form-hint">{{ $t('settings.mockResponseDesc') }}</span>
             </template>
           </n-form-item>
         </n-space>
       </n-card>
 
       <!-- 拒绝检测 -->
-      <n-card title="拒绝检测关键词" size="small">
+      <n-card :title="$t('settings.refusalDetection')" size="small">
         <n-space vertical>
-          <n-form-item label="内置中文关键词">
+          <n-form-item :label="$t('settings.zhKeywords')">
             <div class="builtin-keywords">
               <n-tag v-for="kw in builtinZhKeywords" :key="kw" size="small" type="info" :bordered="false">{{ kw }}</n-tag>
             </div>
           </n-form-item>
 
-          <n-form-item label="内置英文关键词">
+          <n-form-item :label="$t('settings.enKeywords')">
             <div class="builtin-keywords">
               <n-tag v-for="kw in builtinEnKeywords" :key="kw" size="small" type="info" :bordered="false">{{ kw }}</n-tag>
             </div>
           </n-form-item>
 
-          <n-form-item label="自定义中文关键词">
+          <n-form-item :label="$t('settings.customZhKeywords')">
             <n-dynamic-tags
               :value="zhKeywords"
               @update:value="handleKeywordsChange('zh', $event)"
             />
           </n-form-item>
 
-          <n-form-item label="自定义英文关键词">
+          <n-form-item :label="$t('settings.customEnKeywords')">
             <n-dynamic-tags
               :value="enKeywords"
               @update:value="handleKeywordsChange('en', $event)"
@@ -128,14 +125,14 @@
 
       <!-- 保存按钮 -->
       <n-space justify="end">
-        <n-button @click="handleReset">重置</n-button>
+        <n-button @click="handleReset">{{ $t('common.reset') }}</n-button>
         <n-button
           type="primary"
           :disabled="!settingsStore.changed"
           :loading="settingsStore.loading"
           @click="handleSave"
         >
-          保存
+          {{ $t('common.save') }}
         </n-button>
       </n-space>
     </n-space>
@@ -144,9 +141,11 @@
 
 <script setup>
 import { computed } from 'vue'
+import { useI18n } from 'vue-i18n'
 import { useMessage } from 'naive-ui'
 import { useSettingsStore } from '../stores/settingsStore'
 
+const { t } = useI18n()
 const message = useMessage()
 const settingsStore = useSettingsStore()
 
@@ -174,15 +173,15 @@ function handleKeywordsChange(lang, value) {
 async function handleSave() {
   try {
     await settingsStore.saveSettings()
-    message.success('设置已保存')
+    message.success(t('common.success'))
   } catch (error) {
-    message.error('保存失败: ' + error.message)
+    message.error(t('common.error') + ': ' + error.message)
   }
 }
 
 function handleReset() {
   settingsStore.resetSettings()
-  message.info('已重置为默认值')
+  message.info(t('settings.resetSuccess'))
 }
 </script>
 

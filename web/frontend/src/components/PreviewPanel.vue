@@ -1,7 +1,7 @@
 <template>
   <div class="preview-panel">
     <div v-if="!session" class="empty-state">
-      <n-empty description="请选择一个会话" />
+      <n-empty :description="$t('session.selectPrompt')" />
     </div>
 
     <div v-else-if="!preview" class="empty-state">
@@ -17,7 +17,7 @@
           @click="activeTab = 'changes'"
         >
           <n-icon><SwapHorizontalOutline /></n-icon>
-          <span>修改预览</span>
+          <span>{{ $t('preview.changes') }}</span>
           <n-tag v-if="preview.has_changes" type="warning" size="small" style="margin-left: 4px">
             {{ preview.changes.length }}
           </n-tag>
@@ -28,7 +28,7 @@
           @click="activeTab = 'diff'"
         >
           <n-icon><CodeOutline /></n-icon>
-          <span>Diff 视图</span>
+          <span>{{ $t('preview.diff') }}</span>
         </div>
       </div>
 
@@ -39,22 +39,22 @@
           <!-- 状态提示 -->
           <div class="status-banner success-banner" v-if="!preview.has_changes">
             <n-icon color="#18a058"><CheckmarkCircleOutline /></n-icon>
-            <span>当前会话无拒绝内容</span>
+            <span>{{ $t('preview.noRefusal') }}</span>
           </div>
           <div class="status-banner info-banner" v-if="preview.reasoning_count > 0">
             <n-icon color="#2080f0"><InformationCircleOutline /></n-icon>
-            <span>执行清理时将删除 <strong>{{ preview.reasoning_count }}</strong> 条推理内容</span>
+            <span>{{ $t('preview.willBeDeleted') }} <strong>{{ preview.reasoning_count }}</strong> {{ $t('preview.reasoningBlocks') }}</span>
           </div>
           <div class="status-banner info-banner" v-if="preview.thinking_count > 0">
             <n-icon color="#8b5cf6"><InformationCircleOutline /></n-icon>
-            <span>执行清理时将移除 <strong>{{ preview.thinking_count }}</strong> 个 Thinking Block</span>
+            <span>{{ $t('preview.willBeDeleted') }} <strong>{{ preview.thinking_count }}</strong> {{ $t('preview.thinkingBlocks') }}</span>
           </div>
 
           <!-- 对话摘要 -->
           <div v-if="preview.conversation_summary && preview.conversation_summary.length > 0" class="conversation-summary">
             <div class="summary-header">
-              <span>对话内容</span>
-              <n-tag size="small" :bordered="false">{{ preview.total_turns }} 轮</n-tag>
+              <span>{{ $t('preview.conversation') }}</span>
+              <n-tag size="small" :bordered="false">{{ preview.total_turns }} {{ $t('preview.turns') }}</n-tag>
             </div>
             <div class="summary-list">
               <div

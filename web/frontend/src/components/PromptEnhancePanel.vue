@@ -2,12 +2,12 @@
   <div class="prompt-enhance-panel">
     <n-space vertical size="large">
       <!-- CTF/渗透模式 -->
-      <n-card title="CTF/渗透模式" size="small">
+      <n-card :title="$t('enhance.ctfMode')" size="small">
         <template #header-extra>
           <n-space :size="4">
             <n-tag v-if="ctfStore.status?.installed" type="success" size="small">Profile</n-tag>
-            <n-tag v-if="ctfStore.status?.global_installed" type="warning" size="small">全局</n-tag>
-            <n-tag v-if="!ctfStore.status?.installed && !ctfStore.status?.global_installed" type="default" size="small">未启用</n-tag>
+            <n-tag v-if="ctfStore.status?.global_installed" type="warning" size="small">{{ $t('enhance.ctfGlobalMode') }}</n-tag>
+            <n-tag v-if="!ctfStore.status?.installed && !ctfStore.status?.global_installed" type="default" size="small">{{ $t('common.disabled') }}</n-tag>
           </n-space>
         </template>
 
@@ -15,13 +15,13 @@
           <!-- Profile 模式 -->
           <div class="mode-section">
             <div class="mode-header">
-              <n-text strong>Profile 模式</n-text>
+              <n-text strong>Profile {{ $t('enhance.ctfMode') }}</n-text>
               <n-tag :type="ctfStore.status?.installed ? 'success' : 'default'" size="small" :bordered="false">
-                {{ ctfStore.status?.installed ? '已启用' : '未启用' }}
+                {{ ctfStore.status?.installed ? $t('common.enabled') : $t('common.disabled') }}
               </n-tag>
             </div>
             <n-text depth="3" style="font-size: 13px; line-height: 1.6">
-              创建 CTF 预设配置，通过 <code>codex -p ctf</code> 启动时激活。不影响普通 Codex 会话，适合按需使用。
+              {{ $t('enhance.ctfProfileDesc') }}
             </n-text>
             <div style="margin-top: 8px">
               <n-button
@@ -31,7 +31,7 @@
                 :loading="ctfStore.installLoading"
                 @click="handleInstall"
               >
-                启用
+                {{ $t('enhance.enable') }}
               </n-button>
               <n-button
                 v-else
@@ -40,11 +40,11 @@
                 :loading="ctfStore.installLoading"
                 @click="handleUninstall"
               >
-                禁用
+                {{ $t('enhance.disable') }}
               </n-button>
             </div>
             <n-alert v-if="ctfStore.status?.installed" type="info" :bordered="false" style="margin-top: 8px">
-              启用后使用 <code>codex -p ctf</code> 启动新会话即可生效
+              <code>codex -p ctf</code>
             </n-alert>
           </div>
 
@@ -53,13 +53,13 @@
           <!-- 全局模式 -->
           <div class="mode-section">
             <div class="mode-header">
-              <n-text strong>全局模式</n-text>
+              <n-text strong>{{ $t('enhance.ctfGlobalMode') }}</n-text>
               <n-tag :type="ctfStore.status?.global_installed ? 'warning' : 'default'" size="small" :bordered="false">
-                {{ ctfStore.status?.global_installed ? '已启用' : '未启用' }}
+                {{ ctfStore.status?.global_installed ? $t('common.enabled') : $t('common.disabled') }}
               </n-tag>
             </div>
             <n-text depth="3" style="font-size: 13px; line-height: 1.6">
-              直接注入到 Codex 全局配置，所有新会话自动生效。无需额外命令，但请记得用完后禁用。
+              {{ $t('enhance.ctfGlobalDesc') }}
             </n-text>
             <div style="margin-top: 8px">
               <n-button
@@ -69,7 +69,7 @@
                 :loading="ctfStore.globalInstallLoading"
                 @click="handleInstallGlobal"
               >
-                启用全局
+                {{ $t('enhance.enableGlobal') }}
               </n-button>
               <n-button
                 v-else
@@ -78,29 +78,29 @@
                 :loading="ctfStore.globalInstallLoading"
                 @click="handleUninstallGlobal"
               >
-                禁用全局
+                {{ $t('enhance.disableGlobal') }}
               </n-button>
             </div>
             <n-alert v-if="ctfStore.status?.global_installed" type="warning" :bordered="false" style="margin-top: 8px">
-              所有新 Codex 会话都将带有安全测试上下文，用完请及时禁用
+              {{ $t('enhance.ctfGlobalWarning') }}
             </n-alert>
           </div>
         </n-space>
       </n-card>
 
       <!-- 提示词改写器 -->
-      <n-card title="提示词改写器" size="small">
+      <n-card :title="$t('enhance.promptRewrite')" size="small">
         <n-space vertical>
           <n-alert type="info" :bordered="false">
-            将可能被拒绝的请求改写为更易接受的形式，需要配置 AI API
+            {{ $t('enhance.promptRewriteDesc') }}
           </n-alert>
 
-          <n-form-item label="原始请求">
+          <n-form-item :label="$t('enhance.originalPrompt')">
             <n-input
               v-model:value="rewriteInput"
               type="textarea"
               :rows="3"
-              placeholder="输入可能被拒绝的请求..."
+              :placeholder="$t('enhance.originalPromptPlaceholder')"
             />
           </n-form-item>
 
@@ -109,7 +109,7 @@
             :loading="ctfStore.rewriteLoading"
             @click="handleRewrite"
           >
-            改写
+            {{ $t('enhance.rewriteBtn') }}
           </n-button>
 
           <n-alert
@@ -117,14 +117,14 @@
             type="warning"
             :bordered="false"
           >
-            请先在「设置」中配置 AI API
+            {{ $t('enhance.noAiConfig') }}
           </n-alert>
 
           <n-collapse-transition :show="ctfStore.rewrittenRequest">
             <n-card size="small" style="margin-top: 12px">
               <template #header>
                 <n-space align="center">
-                  <span>改写结果</span>
+                  <span>{{ $t('enhance.rewrittenPrompt') }}</span>
                   <n-tag size="small" type="info">{{ ctfStore.rewriteStrategy }}</n-tag>
                 </n-space>
               </template>
@@ -136,8 +136,8 @@
               />
               <template #action>
                 <n-space>
-                  <n-button size="small" @click="copyRewritten">复制</n-button>
-                  <n-button size="small" @click="clearRewrite">清除</n-button>
+                  <n-button size="small" @click="copyRewritten">{{ $t('enhance.copyResult') }}</n-button>
+                  <n-button size="small" @click="clearRewrite">{{ $t('common.clear') }}</n-button>
                 </n-space>
               </template>
             </n-card>
@@ -150,12 +150,12 @@
       </n-card>
 
       <!-- 推荐工作流 -->
-      <n-card title="推荐工作流" size="small">
+      <n-card :title="$t('help.workflow')" size="small">
         <n-steps vertical :current="0">
-          <n-step title="启用 CTF/渗透模式" description="选择 Profile 模式（按需）或全局模式（一键生效）" />
-          <n-step title="新开会话" description="Profile 模式用 codex -p ctf；全局模式直接 codex 即可" />
-          <n-step title="发送请求" description="如果被拒绝，使用提示词改写器" />
-          <n-step title="继续对话" description="如果仍被拒绝，使用会话清理功能" />
+          <n-step :title="$t('help.workflowCtfSteps[0]')" :description="$t('enhance.ctfModeDesc')" />
+          <n-step :title="$t('help.workflowCtfSteps[1]')" description="Profile: codex -p ctf; Global: codex" />
+          <n-step :title="$t('help.workflowCtfSteps[2]')" :description="$t('enhance.promptRewriteDesc')" />
+          <n-step :title="$t('help.workflowCtfSteps[3]')" :description="$t('help.workflowCtfSteps[4]')" />
         </n-steps>
       </n-card>
     </n-space>
@@ -164,10 +164,12 @@
 
 <script setup>
 import { ref, onMounted } from 'vue'
+import { useI18n } from 'vue-i18n'
 import { useMessage, useDialog } from 'naive-ui'
 import { useCTFStore } from '../stores/ctfStore'
 import { useSettingsStore } from '../stores/settingsStore'
 
+const { t } = useI18n()
 const message = useMessage()
 const dialog = useDialog()
 const ctfStore = useCTFStore()
@@ -190,10 +192,10 @@ async function handleInstall() {
 
 async function handleUninstall() {
   dialog.warning({
-    title: '确认禁用',
-    content: '确定要禁用 CTF/渗透模式吗？',
-    positiveText: '确认',
-    negativeText: '取消',
+    title: t('common.confirm'),
+    content: t('enhance.confirmDisableCtf'),
+    positiveText: t('common.confirm'),
+    negativeText: t('common.cancel'),
     onPositiveClick: async () => {
       const result = await ctfStore.uninstall()
       if (result.success) {
@@ -216,10 +218,10 @@ async function handleInstallGlobal() {
 
 async function handleUninstallGlobal() {
   dialog.warning({
-    title: '确认禁用全局模式',
-    content: '确定要禁用全局模式吗？禁用后新的 Codex 会话将不再自动注入安全测试上下文。',
-    positiveText: '确认',
-    negativeText: '取消',
+    title: t('common.confirm'),
+    content: t('enhance.confirmDisableGlobal'),
+    positiveText: t('common.confirm'),
+    negativeText: t('common.cancel'),
     onPositiveClick: async () => {
       const result = await ctfStore.uninstallGlobal()
       if (result.success) {
@@ -235,16 +237,16 @@ async function handleRewrite() {
   if (!rewriteInput.value.trim()) return
   const result = await ctfStore.rewritePrompt(rewriteInput.value)
   if (result.success) {
-    message.success('改写完成')
+    message.success(t('enhance.rewriteSuccess'))
   }
 }
 
 async function copyRewritten() {
   try {
     await navigator.clipboard.writeText(ctfStore.rewrittenRequest)
-    message.success('已复制')
+    message.success(t('common.copied'))
   } catch {
-    message.error('复制失败')
+    message.error(t('common.error'))
   }
 }
 
