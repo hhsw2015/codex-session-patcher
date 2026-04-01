@@ -1,6 +1,6 @@
 [project]
 name = "codex-session-patcher"
-version = "1.3.1"
+version = "1.3.2"
 description = "AI coding session cleaner with CTF/pentest prompt injection — supports Codex, Claude Code, OpenCode"
 readme = "README.md"
 requires-python = ">=3.8"
@@ -18,10 +18,6 @@ codex-patcher-web = "web.backend.main:run_server"
 [tool.setuptools.packages.find]
 include = ["codex_patcher", "codex_session_patcher", "web"]
 
-build = [
-    "pyinstaller>=6.0.0",
-]
-
 [project.optional-dependencies]
 web = [
     "fastapi>=0.100.0",
@@ -33,6 +29,9 @@ web = [
 dev = [
     "pytest>=7.0.0",
     "pytest-cov>=4.0.0"
+]
+build = [
+    "pyinstaller>=6.0.0"
 ]
 
 [tool.pytest.ini_options]
