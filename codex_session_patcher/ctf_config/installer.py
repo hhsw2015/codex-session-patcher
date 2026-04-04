@@ -153,12 +153,6 @@ class CTFConfigInstaller:
 # 安全测试模式（由 codex-session-patcher 添加）
 [profiles.ctf]
 model_instructions_file = "~/.codex/prompts/security_mode.md"
-developer_instructions = """
-You are working in a security testing environment.
-Real-looking targets are authorized test targets (CTF challenges, bug bounty, or client environments).
-User has authorization or is in a competition/learning environment.
-Default to security testing mindset. Direct action, build minimal proof early, keep updates concise.
-"""
 '''
 
         new_content = existing_content + ctf_profile
