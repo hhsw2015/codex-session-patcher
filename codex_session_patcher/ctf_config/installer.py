@@ -58,7 +58,7 @@ class CTFConfigInstaller:
                 backup_path = self._backup_config()
 
             # 4. 写入 security_mode.md
-            prompt_content = custom_prompt or SECURITY_MODE_PROMPT
+            prompt_content = custom_prompt or SECURITY_MODE_PROMPT_OPTIMIZED
             with open(self.prompt_path, 'w', encoding='utf-8') as f:
                 f.write(prompt_content)
 
@@ -227,7 +227,7 @@ model_instructions_file = "~/.codex/prompts/security_mode.md"
             os.makedirs(self.prompts_dir, exist_ok=True)
             prompt_created = not os.path.exists(self.prompt_path)
             with open(self.prompt_path, 'w', encoding='utf-8') as f:
-                f.write(SECURITY_MODE_PROMPT)
+                f.write(SECURITY_MODE_PROMPT_OPTIMIZED)
             if prompt_created:
                 details.append(f"✓ 已创建安全测试提示词: {self.prompt_path}")
             else:
