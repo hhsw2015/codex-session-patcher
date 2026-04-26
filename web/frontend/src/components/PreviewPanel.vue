@@ -444,7 +444,18 @@ const filteredConversation = computed(() => {
   if (conversationView.value === 'incremental' && sessionStore.incrementalFromLine > 0) {
     list = list.filter(t => t.line_num > sessionStore.incrementalFromLine)
   } else if (conversationView.value === 'refusal') {
-    list = filterByGroup(list, t => t.has_refusal)
+    // Only show: preceding user question + refusal assistant messages (skip non-refusal assistants in group)
+    const matched = new Set()
+    list.forEach((t, i) => {
+      if (t.has_refusal) {
+        matched.add(i)
+        // Include preceding user question
+        for (let j = i - 1; j >= 0; j--) {
+          if (list[j].role === 'user') { matched.add(j); break }
+        }
+      }
+    })
+    list = list.filter((_, i) => matched.has(i))
   }
   const q = debouncedSearch.value.trim().toLowerCase()
   if (q) {
