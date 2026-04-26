@@ -3,6 +3,7 @@ API 路由 — 支持 Codex CLI 和 Claude Code 双格式
 """
 from __future__ import annotations
 
+import asyncio
 import logging
 import os
 import json
@@ -1955,7 +1956,7 @@ def start_file_watcher():
         logger.info("Real-time monitor disabled in settings")
         return
     try:
-        loop = asyncio.get_event_loop()
+        loop = asyncio.get_running_loop()
         _session_watcher.start(_on_session_file_changed, loop)
     except Exception:
         logger.warning("Failed to start file watcher", exc_info=True)
@@ -1972,7 +1973,7 @@ async def start_monitor():
     if _session_watcher.is_running:
         return {"status": "already_running"}
     try:
-        loop = asyncio.get_event_loop()
+        loop = asyncio.get_running_loop()
         _session_watcher.start(_on_session_file_changed, loop)
         return {"status": "started"}
     except Exception as e:

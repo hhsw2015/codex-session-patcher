@@ -13,7 +13,7 @@ from contextlib import asynccontextmanager
 mimetypes.add_type("application/javascript", ".js")
 mimetypes.add_type("text/css", ".css")
 
-from .api import router
+from .api import router, start_file_watcher, stop_file_watcher
 
 
 @asynccontextmanager
@@ -21,8 +21,10 @@ async def lifespan(app: FastAPI):
     """应用生命周期"""
     # 启动时
     print("🚀 Codex Session Patcher Web UI 启动中...")
+    start_file_watcher()
     yield
     # 关闭时
+    stop_file_watcher()
     print("👋 Codex Session Patcher Web UI 已关闭")
 
 

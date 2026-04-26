@@ -1074,8 +1074,9 @@ watch(() => sessionStore.selectedId, () => {
 
 .turn-line {
   font-size: 11px;
-  color: var(--color-text-4, #666);
+  color: var(--error-color, #e06060);
   font-family: monospace;
+  font-weight: 600;
 }
 
 .turn-content {
