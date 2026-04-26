@@ -195,6 +195,8 @@ class ClaudeCodeFormatStrategy(FormatStrategy):
             if not (isinstance(item, dict) and item.get('type') == 'thinking')
         ]
         removed = original_len - len(message['content'])
+        if removed > 0 and len(message['content']) == 0:
+            message['content'] = [{'type': 'text', 'text': ''}]
         return updated, removed
 
 
@@ -270,6 +272,8 @@ class OpenCodeFormatStrategy(FormatStrategy):
             if not (isinstance(item, dict) and item.get('type') == 'thinking')
         ]
         removed = original_len - len(message['content'])
+        if removed > 0 and len(message['content']) == 0:
+            message['content'] = [{'type': 'text', 'text': ''}]
         return updated, removed
 
 
