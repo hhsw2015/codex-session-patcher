@@ -286,13 +286,21 @@ def find_group_lines(
 
 
 def save_session_jsonl(lines: List[Dict[str, Any]], file_path: str) -> None:
-    """保存 JSONL 会话数据"""
+    """保存 JSONL 会话数据（原子写入：先写临时文件再 rename，防止崩溃导致文件损坏）"""
+    import os
+    tmp_path = file_path + '.writing.tmp'
     try:
-        with open(file_path, 'w', encoding='utf-8') as f:
+        with open(tmp_path, 'w', encoding='utf-8') as f:
             for line in lines:
                 line_copy = {k: v for k, v in line.items() if not k.startswith('_')}
                 f.write(json.dumps(line_copy, ensure_ascii=False) + '\n')
+        os.replace(tmp_path, file_path)
     except PermissionError as e:
         raise ValueError(f"写入文件失败，权限不足: {file_path}\n{e}")
     except Exception as e:
+        # Clean up temp file on failure
+        try:
+            os.remove(tmp_path)
+        except OSError:
+            pass
         raise ValueError(f"写入文件失败: {file_path}\n{e}")
