@@ -41,7 +41,10 @@ from codex_session_patcher.core import (
 )
 from codex_session_patcher.core.patcher import clean_session_jsonl, save_session_jsonl, delete_session_lines
 from codex_session_patcher.core.scan_cache import ScanCache
-from .file_watcher import SessionWatcher
+try:
+    from .file_watcher import SessionWatcher
+except ImportError:
+    SessionWatcher = None
 from codex_session_patcher.core.sqlite_adapter import OpenCodeDBAdapter, DEFAULT_OPENCODE_DB
 
 logger = logging.getLogger(__name__)
@@ -80,7 +83,7 @@ manager = ConnectionManager()
 
 _detector = RefusalDetector()
 _scan_cache = ScanCache()
-_session_watcher = SessionWatcher()
+_session_watcher = SessionWatcher() if SessionWatcher else None
 
 
 # ─── 会话缓存 ────────────────────────────────────────────────────────────────
@@ -1951,6 +1954,9 @@ async def _on_session_file_changed(path: str):
 
 def start_file_watcher():
     """Start the file watcher if enabled in settings."""
+    if not _session_watcher:
+        logger.info("watchdog not installed, real-time monitor unavailable")
+        return
     settings = load_settings()
     if not getattr(settings, 'realtime_monitor', False):
         logger.info("Real-time monitor disabled in settings")
@@ -1964,12 +1970,15 @@ def start_file_watcher():
 
 def stop_file_watcher():
     """Stop the file watcher."""
-    _session_watcher.stop()
+    if _session_watcher:
+        _session_watcher.stop()
 
 
 @router.post("/monitor/start")
 async def start_monitor():
     """Start real-time session monitoring."""
+    if not _session_watcher:
+        return {"status": "error", "message": "watchdog not installed"}
     if _session_watcher.is_running:
         return {"status": "already_running"}
     try:
@@ -1983,11 +1992,15 @@ async def start_monitor():
 @router.post("/monitor/stop")
 async def stop_monitor():
     """Stop real-time session monitoring."""
-    _session_watcher.stop()
+    if _session_watcher:
+        _session_watcher.stop()
     return {"status": "stopped"}
 
 
 @router.get("/monitor/status")
 async def monitor_status():
     """Get real-time monitor status."""
-    return {"running": _session_watcher.is_running}
+    return {
+        "available": _session_watcher is not None,
+        "running": _session_watcher.is_running if _session_watcher else False,
+    }
