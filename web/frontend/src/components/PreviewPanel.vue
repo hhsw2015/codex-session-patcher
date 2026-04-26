@@ -341,7 +341,7 @@
               v-for="(turn, idx) in filteredConversation"
               :key="idx"
               class="summary-turn"
-              :class="turn.role"
+              :class="[turn.role, { 'has-refusal': turn.has_refusal }]"
             >
               <div class="turn-header">
                 <n-tag
@@ -702,9 +702,15 @@ watch(() => sessionStore.selectedId, () => {
   align-items: center;
   gap: 6px;
 }
+.summary-turn.has-refusal {
+  border: 1px solid var(--error-color, #e06060);
+  border-left: 3px solid var(--error-color, #e06060);
+  border-radius: 4px;
+  background: rgba(224, 96, 96, 0.06);
+  padding: 8px;
+}
 .turn-content.refusal {
-  border-left: 2px solid var(--error-color, #e88080);
-  padding-left: 8px;
+  color: var(--error-color, #e06060);
 }
 .preview-panel {
   flex: 1;
