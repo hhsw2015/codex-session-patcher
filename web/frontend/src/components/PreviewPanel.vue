@@ -728,7 +728,8 @@ watch(() => sessionStore.selectedId, () => {
   opacity: 0;
   transition: opacity 0.15s;
 }
-.summary-turn:hover .turn-actions {
+.summary-turn:hover .turn-actions,
+.change-item:hover .turn-actions {
   opacity: 1;
 }
 .turn-header {
