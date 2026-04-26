@@ -30,6 +30,29 @@
           <n-icon><CodeOutline /></n-icon>
           <span>{{ $t('preview.diff') }}</span>
         </div>
+        <div
+          class="tab-item"
+          :class="{ active: activeTab === 'conversation' }"
+          @click="activeTab = 'conversation'"
+        >
+          <n-icon><ChatbubbleEllipsesOutline /></n-icon>
+          <span>{{ $t('preview.conversation') || '对话' }}</span>
+          <n-tag v-if="preview.total_turns" size="small" :bordered="false" style="margin-left: 4px">
+            {{ preview.total_turns }}
+          </n-tag>
+        </div>
+        <!-- 撤销按钮 -->
+        <div
+          v-if="sessionStore.undoStack.length > 0"
+          class="tab-item undo-btn"
+          @click="handleUndo"
+        >
+          <n-icon><ArrowUndoOutline /></n-icon>
+          <span>{{ $t('preview.undo') || '撤销' }}</span>
+          <n-tag size="small" type="warning" :bordered="false" style="margin-left: 4px">
+            {{ sessionStore.undoStack.length }}
+          </n-tag>
+        </div>
       </div>
 
       <!-- 修改预览 Tab -->
@@ -58,7 +81,7 @@
             <span>{{ $t('preview.willDeleteThinking', { count: preview.thinking_count }) }}</span>
           </div>
 
-          <!-- 对话摘要 -->
+          <!-- 对话摘要（只读预览，操作按钮在独立 "对话" tab） -->
           <div v-if="preview.conversation_summary && preview.conversation_summary.length > 0" class="conversation-summary">
             <div class="summary-header">
               <span>{{ $t('preview.conversation') }}</span>
@@ -146,9 +169,26 @@
                   </template>
                   <template v-else>L{{ change.line_num }}</template>
                 </span>
+                <div v-if="change.type === 'replace'" class="turn-actions" style="margin-left: auto">
+                  <n-dropdown :options="messageActions" size="small" @select="(key) => handleMessageAction(key, { line_num: change.line_num, content: change.original || '' })">
+                    <n-button text size="tiny" type="default">
+                      <template #icon><n-icon size="14"><EllipsisHorizontalOutline /></n-icon></template>
+                    </n-button>
+                  </n-dropdown>
+                </div>
               </div>
 
               <div v-if="change.type === 'replace'" class="change-content">
+                <!-- 显示对应的用户提问 -->
+                <template v-for="uq in [findPrecedingUserQuestion(change.line_num)]" :key="'uq-' + change.line_num">
+                  <div v-if="uq" class="content-block user-context">
+                    <div class="content-label">
+                      <n-tag type="info" size="small" :bordered="false">User</n-tag>
+                      L{{ uq.line_num }}
+                    </div>
+                    <pre>{{ uq.content }}</pre>
+                  </div>
+                </template>
                 <div class="content-block original">
                   <div class="content-label">{{ $t('preview.original') }}</div>
                   <pre>{{ change.original }}</pre>
@@ -259,6 +299,76 @@
           </n-empty>
         </div>
       </div>
+
+      <!-- 对话视图 Tab (独立 tab，始终可用) -->
+      <div v-show="activeTab === 'conversation'" class="preview-scrollbar">
+        <div v-if="preview.conversation_summary && preview.conversation_summary.length > 0" class="conversation-summary">
+          <!-- 搜索框 -->
+          <div class="conversation-search">
+            <n-input
+              v-model:value="conversationSearch"
+              :placeholder="$t('preview.searchConversation') || '搜索对话内容...'"
+              clearable
+              size="small"
+            />
+          </div>
+          <!-- 视图范围切换 -->
+          <div class="conversation-filter">
+            <n-button-group size="tiny">
+              <n-button
+                v-if="sessionStore.incrementalFromLine > 0"
+                :type="conversationView === 'incremental' ? 'primary' : 'default'"
+                @click="conversationView = 'incremental'"
+              >
+                {{ $t('preview.incrementalOnly') || '仅增量' }} (L{{ sessionStore.incrementalFromLine }}+)
+              </n-button>
+              <n-button :type="conversationView === 'refusal' ? 'primary' : 'default'" @click="conversationView = 'refusal'">
+                {{ $t('preview.refusalOnly') || '仅拒绝' }}
+              </n-button>
+              <n-button :type="conversationView === 'all' ? 'primary' : 'default'" @click="conversationView = 'all'">
+                {{ $t('preview.allConversation') || '全部' }}
+              </n-button>
+            </n-button-group>
+            <n-tag v-if="filteredConversation.length !== (preview.conversation_summary || []).length" size="small" :bordered="false" style="margin-left: 8px">
+              {{ filteredConversation.length }} / {{ (preview.conversation_summary || []).length }}
+            </n-tag>
+          </div>
+          <div class="summary-list">
+            <div v-if="filteredConversation.length === 0 && debouncedSearch" class="empty-content" style="padding: 16px">
+              <n-empty :description="`未找到匹配 '${debouncedSearch}' 的对话`" size="small" />
+            </div>
+            <div
+              v-for="(turn, idx) in filteredConversation"
+              :key="idx"
+              class="summary-turn"
+              :class="turn.role"
+            >
+              <div class="turn-header">
+                <n-tag
+                  :type="turn.has_refusal ? 'error' : (turn.role === 'user' ? 'info' : 'default')"
+                  size="small"
+                  :bordered="false"
+                >
+                  {{ turn.role === 'user' ? 'User' : 'Assistant' }}
+                </n-tag>
+                <span class="turn-line">L{{ turn.line_num }}</span>
+                <n-tag v-if="turn.has_refusal" size="small" type="error" :bordered="false">refusal</n-tag>
+                <div v-if="turn.role === 'assistant'" class="turn-actions">
+                  <n-dropdown :options="messageActions" size="small" @select="(key) => handleMessageAction(key, turn)">
+                    <n-button text size="tiny" type="default">
+                      <template #icon><n-icon size="14"><EllipsisHorizontalOutline /></n-icon></template>
+                    </n-button>
+                  </n-dropdown>
+                </div>
+              </div>
+              <pre class="turn-content" :class="{ refusal: turn.has_refusal }">{{ turn.content }}</pre>
+            </div>
+          </div>
+        </div>
+        <div v-else class="empty-content">
+          <n-empty :description="$t('preview.noConversation') || '暂无对话'" />
+        </div>
+      </div>
     </div>
   </div>
 </template>
@@ -266,7 +376,7 @@
 <script setup>
 import { ref, computed, watch } from 'vue'
 import { useI18n } from 'vue-i18n'
-import { CheckmarkCircleOutline, ArrowDownOutline, SwapHorizontalOutline, CodeOutline, InformationCircleOutline } from '@vicons/ionicons5'
+import { CheckmarkCircleOutline, ArrowDownOutline, SwapHorizontalOutline, CodeOutline, InformationCircleOutline, EllipsisHorizontalOutline, ChatbubbleEllipsesOutline, ArrowUndoOutline } from '@vicons/ionicons5'
 import { useSessionStore } from '../stores/sessionStore'
 
 const { t } = useI18n()
@@ -289,6 +399,70 @@ const selectedLines = ref(new Set())
 
 const session = computed(() => sessionStore.getSelectedSession())
 const preview = computed(() => sessionStore.preview)
+const conversationView = ref('refusal') // 'refusal' | 'all' | 'incremental'
+const conversationSearch = ref('')
+const debouncedSearch = ref('')
+let _searchTimer = null
+watch(conversationSearch, (val) => {
+  clearTimeout(_searchTimer)
+  _searchTimer = setTimeout(() => { debouncedSearch.value = val }, 300)
+})
+
+// 按组过滤：user + 后续所有 assistant 为一组，组内任一匹配则整组保留
+function filterByGroup(list, predicate) {
+  const groups = []
+  let current = null
+  list.forEach((t, i) => {
+    if (t.role === 'user') {
+      current = { indices: [i] }
+      groups.push(current)
+    } else if (current) {
+      current.indices.push(i)
+    } else {
+      current = { indices: [i] }
+      groups.push(current)
+    }
+  })
+  const matched = new Set()
+  for (const group of groups) {
+    if (group.indices.some(i => predicate(list[i]))) {
+      group.indices.forEach(i => matched.add(i))
+    }
+  }
+  return list.filter((_, i) => matched.has(i))
+}
+
+const filteredConversation = computed(() => {
+  let list = preview.value?.conversation_summary || []
+  if (conversationView.value === 'incremental' && sessionStore.incrementalFromLine > 0) {
+    list = list.filter(t => t.line_num > sessionStore.incrementalFromLine)
+  } else if (conversationView.value === 'refusal') {
+    list = filterByGroup(list, t => t.has_refusal)
+  }
+  const q = debouncedSearch.value.trim().toLowerCase()
+  if (q) {
+    list = filterByGroup(list, t => {
+      const text = (t.search_text || t.content || '').toLowerCase()
+      return text.includes(q)
+    })
+  }
+  // Reverse group order (newest first), but keep messages within each group in original order
+  const groups = []
+  let current = null
+  list.forEach(t => {
+    if (t.role === 'user') {
+      current = [t]
+      groups.push(current)
+    } else if (current) {
+      current.push(t)
+    } else {
+      current = [t]
+      groups.push(current)
+    }
+  })
+  groups.reverse()
+  return groups.flat()
+})
 
 // 监听预览数据变化，初始化选中状态（默认全选）
 watch(() => sessionStore.preview, (newPreview) => {
@@ -331,6 +505,133 @@ function getSelectedLines() {
   return Array.from(selectedLines.value)
 }
 
+// 根据行号找到前一个 user 提问
+function findPrecedingUserQuestion(lineNum) {
+  const summary = preview.value?.conversation_summary || []
+  const idx = summary.findIndex(t => t.line_num === lineNum)
+  if (idx < 0) return null
+  for (let i = idx - 1; i >= 0; i--) {
+    if (summary[i].role === 'user') return summary[i]
+  }
+  return null
+}
+
+// 单条消息操作
+const messageActions = [
+  { label: '撤回 (Revoke)', key: 'revoke' },
+  { label: '删除回复 (Delete)', key: 'delete' },
+  { label: '改写 (Rewrite)', key: 'rewrite' },
+  { label: 'AI 改写', key: 'ai-rewrite' },
+]
+
+// 找到当前 assistant 所在组的全部信息
+function findGroup(turn) {
+  const summary = preview.value?.conversation_summary || []
+  const idx = summary.findIndex(t => t.line_num === turn.line_num)
+  if (idx < 0) return { userTurn: null, assistantTurns: [turn], allLineNums: [turn.line_num] }
+
+  // Scan backward to find group start (user message)
+  let groupStart = idx
+  for (let i = idx - 1; i >= 0; i--) {
+    if (summary[i].role === 'user') { groupStart = i; break }
+  }
+
+  // Collect group: user + all assistants until next user
+  const userTurn = summary[groupStart].role === 'user' ? summary[groupStart] : null
+  const assistantTurns = []
+  const allLineNums = []
+  for (let i = groupStart; i < summary.length; i++) {
+    if (i > groupStart && summary[i].role === 'user') break
+    allLineNums.push(summary[i].line_num)
+    if (summary[i].role === 'assistant') assistantTurns.push(summary[i])
+  }
+  return { userTurn, assistantTurns, allLineNums }
+}
+
+async function handleMessageAction(action, turn) {
+  const sessionId = sessionStore.selectedId
+  if (!sessionId) return
+
+  const group = findGroup(turn)
+  const assistantLineNums = group.assistantTurns.map(t => t.line_num)
+  const lastAssistant = group.assistantTurns[group.assistantTurns.length - 1] || turn
+
+  if (action === 'revoke') {
+    const desc = group.allLineNums.map(n => 'L' + n).join(', ')
+    if (!confirm(`确定撤回整组对话？将删除 ${group.allLineNums.length} 条消息 (${desc})`)) return
+    await sessionStore.deleteMessages(sessionId, group.allLineNums, true)
+
+  } else if (action === 'delete') {
+    const desc = assistantLineNums.map(n => 'L' + n).join(', ')
+    if (!confirm(`确定删除该组全部 ${assistantLineNums.length} 条 AI 回复？用户问题保留。(${desc})`)) return
+    await sessionStore.deleteMessages(sessionId, assistantLineNums, true)
+
+  } else if (action === 'rewrite') {
+    const newText = prompt('输入替换内容（将替换该组所有 AI 回复为一条）:', lastAssistant.content)
+    if (newText === null || newText === lastAssistant.content) return
+    // Step 1: rewrite last assistant FIRST (line numbers unchanged at this point)
+    const { patchSession: rawPatch, deleteMessages: rawDelete } = await import('../services/api')
+    const replacements = [{ line_num: lastAssistant.line_num, replacement_text: newText }]
+    const patchResult = await rawPatch(sessionId, replacements, [lastAssistant.line_num])
+    if (patchResult.backup_path) {
+      sessionStore.undoStack.push({ sessionId, operation: 'rewrite-group', backupPath: patchResult.backup_path, description: `改写 L${lastAssistant.line_num}` })
+    }
+    // Step 2: delete other assistants in group (line shift doesn't matter now)
+    const toDelete = assistantLineNums.slice(0, -1)
+    if (toDelete.length > 0) {
+      const delResult = await rawDelete(sessionId, toDelete, true)
+      if (delResult.backup_path) {
+        sessionStore.undoStack.push({ sessionId, operation: 'rewrite-group-delete', backupPath: delResult.backup_path, description: `删除组内 ${toDelete.length} 条中间回复` })
+      }
+    }
+    // Step 3: reload
+    await sessionStore.fetchSessions()
+    await sessionStore.previewSession(sessionId)
+
+  } else if (action === 'ai-rewrite') {
+    const contextBefore = group.userTurn
+      ? (group.userTurn.search_text || group.userTurn.content || '')
+      : ''
+    const originalContent = lastAssistant.search_text || lastAssistant.content || ''
+    try {
+      const { aiRewriteSingle, patchSession: rawPatch, deleteMessages: rawDelete } = await import('../services/api')
+      const result = await aiRewriteSingle(originalContent, contextBefore)
+      if (!result.success) {
+        alert('AI 改写失败: ' + (result.error || '未知错误'))
+        return
+      }
+      const confirmed = prompt('AI 改写结果（可编辑后确认，将替换该组所有 AI 回复为一条）:', result.replacement)
+      if (confirmed === null) return
+      // Step 1: rewrite last assistant FIRST
+      const replacements = [{ line_num: lastAssistant.line_num, replacement_text: confirmed }]
+      const patchResult = await rawPatch(sessionId, replacements, [lastAssistant.line_num])
+      if (patchResult.backup_path) {
+        sessionStore.undoStack.push({ sessionId, operation: 'ai-rewrite-group', backupPath: patchResult.backup_path, description: `AI 改写 L${lastAssistant.line_num}` })
+      }
+      // Step 2: delete other assistants
+      const toDelete = assistantLineNums.slice(0, -1)
+      if (toDelete.length > 0) {
+        const delResult = await rawDelete(sessionId, toDelete, true)
+        if (delResult.backup_path) {
+          sessionStore.undoStack.push({ sessionId, operation: 'ai-rewrite-group-delete', backupPath: delResult.backup_path, description: `删除组内 ${toDelete.length} 条中间回复` })
+        }
+      }
+      // Step 3: reload
+      await sessionStore.fetchSessions()
+      await sessionStore.previewSession(sessionId)
+    } catch (e) {
+      alert('AI 改写失败: ' + e.message)
+    }
+  }
+}
+
+async function handleUndo() {
+  const last = sessionStore.undoStack[sessionStore.undoStack.length - 1]
+  if (!last) return
+  if (!confirm(`确定撤销上一步操作？\n${last.description}`)) return
+  await sessionStore.undoLast()
+}
+
 // 暴露方法给父组件
 defineExpose({
   getSelectedLines,
@@ -360,10 +661,51 @@ watch(() => sessionStore.selectedId, () => {
   } else {
     activeTab.value = 'changes'
   }
+  // 重置对话视图状态
+  conversationView.value = 'refusal'
+  conversationSearch.value = ''
 })
 </script>
 
 <style scoped>
+.content-block.user-context {
+  opacity: 0.7;
+  border-left: 2px solid var(--info-color, #2080f0);
+  padding-left: 8px;
+  margin-bottom: 4px;
+}
+.content-block.user-context pre {
+  font-size: 12px;
+  max-height: 60px;
+  overflow: hidden;
+}
+.undo-btn {
+  margin-left: auto !important;
+  color: var(--warning-color, #f0a020) !important;
+}
+.conversation-search {
+  padding: 0 0 8px 0;
+}
+.conversation-filter {
+  padding: 0 0 8px 0;
+}
+.turn-actions {
+  margin-left: auto;
+  opacity: 0;
+  transition: opacity 0.15s;
+}
+.summary-turn:hover .turn-actions {
+  opacity: 1;
+}
+.turn-header {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+}
+.turn-content.refusal {
+  border-left: 2px solid var(--error-color, #e88080);
+  padding-left: 8px;
+}
 .preview-panel {
   flex: 1;
   overflow: hidden;

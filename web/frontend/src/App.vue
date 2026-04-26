@@ -204,13 +204,15 @@ const naiveDateLocale = computed(() => {
   return localeStore.currentLocale === 'en-US' ? dateEnUS : dateZhCN
 })
 
-// 初始化：加载会话列表
-sessionStore.fetchSessions()
-
-// Tab 切换时加载设置
+// Tab 切换时按需加载
+let _sessionsLoaded = false
 function handleTabChange(tab) {
   if (tab === 'settings') {
     settingsStore.loadSettings()
+  }
+  if (tab === 'sessions' && !_sessionsLoaded) {
+    _sessionsLoaded = true
+    sessionStore.fetchSessions(false, 'auto', 'cached')
   }
 }
 

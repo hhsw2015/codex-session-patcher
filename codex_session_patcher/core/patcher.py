@@ -149,6 +149,86 @@ def clean_session_jsonl(
     return lines, modified, changes
 
 
+def delete_session_lines(
+    lines: List[Dict[str, Any]],
+    target_line_nums: List[int],
+    session_format: SessionFormat = SessionFormat.CODEX,
+    delete_paired: bool = True,
+) -> Tuple[List[Dict[str, Any]], List[int]]:
+    """
+    Delete specific lines from session, with optional paired deletion.
+
+    Paired deletion handles:
+    - Codex: response_item (primary) + event_msg (companion) lines
+    - Claude Code: assistant with tool_use -> next human with tool_result
+    - OpenCode: same as Claude Code
+
+    Args:
+        lines: JSONL line list
+        target_line_nums: 1-based line numbers to delete
+        session_format: session format
+        delete_paired: if True, also delete paired messages (companions, tool_results)
+
+    Returns:
+        (remaining_lines, all_deleted_line_nums_1based)
+    """
+    strategy = get_format_strategy(session_format)
+    to_delete = set(target_line_nums)
+
+    if delete_paired:
+        for line_num in list(target_line_nums):
+            idx = line_num - 1
+            if idx < 0 or idx >= len(lines):
+                continue
+            line = lines[idx]
+
+            if session_format == SessionFormat.CODEX:
+                if line.get('type') == 'response_item':
+                    # Look backward for preceding reasoning lines
+                    for i in range(idx - 1, -1, -1):
+                        li = lines[i]
+                        if li.get('type') == 'response_item' and li.get('payload', {}).get('type') == 'reasoning':
+                            to_delete.add(i + 1)
+                        else:
+                            break
+                    # Look forward for companion event_msg lines
+                    for i in range(idx + 1, len(lines)):
+                        lt = lines[i].get('type')
+                        if lt == 'response_item' or lt == 'user_message':
+                            break
+                        if lt == 'event_msg':
+                            to_delete.add(i + 1)
+            else:
+                # Claude Code / OpenCode: check tool_use/tool_result pairing
+                msg = line.get('message', {})
+                content = msg.get('content', [])
+                if not isinstance(content, list):
+                    continue
+                tool_use_ids = set()
+                for block in content:
+                    if isinstance(block, dict) and block.get('type') == 'tool_use':
+                        tid = block.get('id', '')
+                        if tid:
+                            tool_use_ids.add(tid)
+                if tool_use_ids and idx + 1 < len(lines):
+                    next_line = lines[idx + 1]
+                    next_content = next_line.get('message', {}).get('content', [])
+                    if isinstance(next_content, list):
+                        has_matching_result = any(
+                            isinstance(b, dict)
+                            and b.get('type') == 'tool_result'
+                            and b.get('tool_use_id', '') in tool_use_ids
+                            for b in next_content
+                        )
+                        if has_matching_result:
+                            to_delete.add(idx + 2)
+
+    deleted_sorted = sorted(to_delete)
+    delete_set = set(deleted_sorted)
+    remaining = [line for i, line in enumerate(lines) if (i + 1) not in delete_set]
+    return remaining, deleted_sorted
+
+
 def save_session_jsonl(lines: List[Dict[str, Any]], file_path: str) -> None:
     """保存 JSONL 会话数据"""
     try:

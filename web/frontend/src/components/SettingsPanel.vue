@@ -138,6 +138,33 @@
         </n-space>
       </n-card>
 
+      <!-- 扫描与备份 -->
+      <n-card :title="$t('settings.scanBackup') || '扫描与备份'" size="small">
+        <n-space vertical>
+          <n-form-item :label="$t('settings.incrementalScan') || '增量扫描'">
+            <n-switch
+              v-model:value="settingsStore.incrementalScan"
+              @update:value="settingsStore.markChanged"
+            />
+            <template #feedback>
+              <span class="form-hint">{{ $t('settings.incrementalScanDesc') || '启用后增量扫描只扫描新增内容，加快扫描速度' }}</span>
+            </template>
+          </n-form-item>
+          <n-form-item :label="$t('settings.maxBackups') || '每个 Session 最大备份数'">
+            <n-input-number
+              v-model:value="settingsStore.maxBackupsPerSession"
+              :min="0"
+              :max="100"
+              size="small"
+              @update:value="settingsStore.markChanged"
+            />
+            <template #feedback>
+              <span class="form-hint">{{ $t('settings.maxBackupsDesc') || '0 表示不限制。超出数量时自动删除最旧的备份' }}</span>
+            </template>
+          </n-form-item>
+        </n-space>
+      </n-card>
+
       <!-- 保存按钮 -->
       <n-space justify="end">
         <n-button @click="handleReset">{{ $t('common.reset') }}</n-button>

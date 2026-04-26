@@ -272,3 +272,18 @@ async def generate_ai_rewrite(
         return AIRewriteResponse(success=False, error="AI 未能生成任何改写内容")
 
     return AIRewriteResponse(success=True, items=items)
+
+
+async def generate_single_rewrite(
+    settings: Settings,
+    original_content: str,
+    context_before: str = "",
+) -> str:
+    """对单条消息生成 AI 改写，不加载 session 文件。"""
+    if not original_content or not original_content.strip():
+        raise ValueError("原始内容为空，无法改写")
+    context_messages = []
+    if context_before:
+        context_messages.append({"role": "user", "content": context_before})
+    messages = build_rewrite_prompt(context_messages, original_content)
+    return await call_llm(settings, messages)

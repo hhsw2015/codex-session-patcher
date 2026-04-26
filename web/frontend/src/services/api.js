@@ -95,8 +95,38 @@ async function request(path, options = {}) {
 }
 
 // 获取会话列表
-export async function getSessions(skipCheck = false, format = 'auto') {
-  return request(`/sessions?skip_check=${skipCheck}&format=${format}`)
+export async function getSessions(skipCheck = false, format = 'auto', scanMode = '') {
+  const params = `skip_check=${skipCheck}&format=${format}${scanMode ? '&scan_mode=' + scanMode : ''}`
+  return request(`/sessions?${params}`)
+}
+
+// 扫描单个 session
+export async function scanSession(id, mode = 'full') {
+  clearCache('sessions')
+  return request(`/sessions/${id}/scan?mode=${mode}`, { method: 'POST' })
+}
+
+// 删除指定消息
+export async function deleteMessages(id, lineNums, deletePaired = true, createBackup = true) {
+  clearCache('sessions')
+  return request(`/sessions/${id}/messages/delete`, {
+    method: 'POST',
+    body: JSON.stringify({ line_nums: lineNums, delete_paired: deletePaired, create_backup: createBackup })
+  })
+}
+
+// 单条 AI 改写
+export async function aiRewriteSingle(originalContent, contextBefore = '') {
+  return request('/ai-rewrite-single', {
+    method: 'POST',
+    body: JSON.stringify({ original_content: originalContent, context_before: contextBefore })
+  })
+}
+
+// 清理 thinking blocks
+export async function cleanThinking(id) {
+  clearCache('sessions')
+  return request(`/sessions/${id}/clean-thinking`, { method: 'POST' })
 }
 
 // 搜索会话内容

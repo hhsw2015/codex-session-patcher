@@ -11,6 +11,21 @@
       </div>
     </div>
 
+    <!-- 扫描模式工具栏 -->
+    <div class="scan-toolbar">
+      <n-button-group size="tiny">
+        <n-button @click="loadCached" :loading="loading" :disabled="loading">
+          {{ $t('session.scan_cached') || '缓存' }}
+        </n-button>
+        <n-button @click="scanFull" :loading="loading" :disabled="loading">
+          {{ $t('session.scan_full') || '全量扫描' }}
+        </n-button>
+        <n-button @click="scanIncremental" :loading="loading" :disabled="loading">
+          {{ $t('session.scan_incremental') || '增量扫描' }}
+        </n-button>
+      </n-button-group>
+    </div>
+
     <!-- 格式 Tab（多格式时显示） -->
     <div v-if="settingsStore.claudeCodeEnabled || settingsStore.opencodeEnabled" class="format-tabs">
       <button
@@ -144,14 +159,17 @@
                 </div>
                 <div class="session-meta">
                   <n-tag
-                    v-if="session.has_refusal"
+                    v-if="session.has_refusal === true"
                     type="error"
                     size="small"
                   >
                     {{ session.refusal_count }}
                   </n-tag>
-                  <n-tag v-else type="success" size="small">
+                  <n-tag v-else-if="session.has_refusal === false" type="success" size="small">
                     OK
+                  </n-tag>
+                  <n-tag v-else size="small" :bordered="false">
+                    {{ session.cached ? 'cached' : '--' }}
                   </n-tag>
                   <n-tag
                     v-if="session.has_backup"
@@ -182,6 +200,17 @@
                 <div class="detail-item">
                   <span class="label">{{ $t('session.modified') }}:</span>
                   <span class="value">{{ session.mtime }}</span>
+                </div>
+                <div class="detail-actions">
+                  <n-button size="tiny" @click.stop="scanSingle(session.id, 'incremental')">
+                    {{ $t('session.scan_incremental') || '增量扫描' }}
+                  </n-button>
+                  <n-button size="tiny" @click.stop="scanSingle(session.id, 'full')">
+                    {{ $t('session.scan_full') || '全量扫描' }}
+                  </n-button>
+                  <n-button size="tiny" @click.stop="cleanThinkingSingle(session.id)">
+                    {{ $t('session.clean_thinking') || '清理 Thinking' }}
+                  </n-button>
                 </div>
               </div>
             </div>
@@ -289,7 +318,7 @@ const visibleSessions = computed(() => {
 })
 
 const refusalCount = computed(() => {
-  return visibleSessions.value.filter(s => s.has_refusal).length
+  return visibleSessions.value.filter(s => s.has_refusal === true).length
 })
 
 const patchedCount = computed(() => {
@@ -305,9 +334,9 @@ const filteredSessions = computed(() => {
   let list = visibleSessions.value
   // 按拒绝状态过滤
   if (filterMode.value === 'refusal') {
-    list = list.filter(s => s.has_refusal)
+    list = list.filter(s => s.has_refusal === true)
   } else if (filterMode.value === 'clean') {
-    list = list.filter(s => !s.has_refusal)
+    list = list.filter(s => s.has_refusal === false)
   } else if (filterMode.value === 'patched') {
     list = list.filter(s => s.has_backup)
   }
@@ -326,12 +355,11 @@ const groupedSessions = computed(() => {
   const wa = new Date(Date.now() - 7 * 86400000)
   const weekAgo = `${wa.getFullYear()}-${pad(wa.getMonth() + 1)}-${pad(wa.getDate())}`
 
-  // 先按是否有拒绝内容排序，再按日期分组
+  // 先按是否有拒绝内容排序（有拒绝 > 未扫描 > 无拒绝），再按日期
   const sortedSessions = [...filteredSessions.value].sort((a, b) => {
-    // 有拒绝内容的排前面
-    if (a.has_refusal !== b.has_refusal) {
-      return a.has_refusal ? -1 : 1
-    }
+    const rank = (s) => s.has_refusal === true ? 0 : s.has_refusal === null ? 1 : 2
+    const ra = rank(a), rb = rank(b)
+    if (ra !== rb) return ra - rb
     // 同类型按修改时间排序
     return b.mtime.localeCompare(a.mtime)
   })
@@ -388,9 +416,53 @@ function toggleGroup(label) {
 async function refresh() {
   loading.value = true
   try {
-    await sessionStore.fetchSessions()
+    await sessionStore.fetchSessions(false, 'auto', 'cached')
   } finally {
     loading.value = false
+  }
+}
+
+async function loadCached() {
+  loading.value = true
+  try {
+    await sessionStore.fetchSessions(false, 'auto', 'cached')
+  } finally {
+    loading.value = false
+  }
+}
+
+async function scanFull() {
+  loading.value = true
+  try {
+    await sessionStore.fetchSessions(false, 'auto', 'full')
+  } finally {
+    loading.value = false
+  }
+}
+
+async function scanIncremental() {
+  loading.value = true
+  try {
+    await sessionStore.fetchSessions(false, 'auto', 'incremental')
+  } finally {
+    loading.value = false
+  }
+}
+
+async function scanSingle(id, mode = 'full') {
+  try {
+    await sessionStore.scanSingleSession(id, mode)
+  } catch (e) {
+    console.error('Scan failed:', e)
+  }
+}
+
+async function cleanThinkingSingle(id) {
+  if (!confirm('确定清理该 session 的所有 thinking blocks？')) return
+  try {
+    await sessionStore.cleanThinking(id)
+  } catch (e) {
+    console.error('Clean thinking failed:', e)
   }
 }
 
@@ -412,6 +484,16 @@ function formatTime(mtime) {
 </script>
 
 <style scoped>
+.scan-toolbar {
+  padding: 4px 12px;
+  display: flex;
+  gap: 4px;
+}
+.detail-actions {
+  display: flex;
+  gap: 6px;
+  margin-top: 6px;
+}
 .session-list {
   height: 100%;
   display: flex;

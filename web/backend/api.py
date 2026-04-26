@@ -14,6 +14,7 @@ from pathlib import Path
 from fastapi import APIRouter, HTTPException, WebSocket, WebSocketDisconnect
 from fastapi.responses import JSONResponse
 
+import sqlite3
 import time as _time
 
 from .schemas import (
@@ -22,6 +23,8 @@ from .schemas import (
     AIRewriteResponse, PatchRequest, BackupInfo, RestoreResponse, DiffItem,
     CTFStatusResponse, CTFInstallResponse, PromptRewriteRequest, PromptRewriteResponse,
     ConversationTurn,
+    DeleteMessagesRequest, DeleteMessagesResponse, ScanSessionResponse,
+    SingleRewriteRequest, SingleRewriteResponse,
 )
 
 from codex_session_patcher.core import (
@@ -35,7 +38,8 @@ from codex_session_patcher.core import (
     get_reasoning_items,
     MOCK_RESPONSE,
 )
-from codex_session_patcher.core.patcher import clean_session_jsonl, save_session_jsonl
+from codex_session_patcher.core.patcher import clean_session_jsonl, save_session_jsonl, delete_session_lines
+from codex_session_patcher.core.scan_cache import ScanCache
 from codex_session_patcher.core.sqlite_adapter import OpenCodeDBAdapter, DEFAULT_OPENCODE_DB
 
 logger = logging.getLogger(__name__)
@@ -73,6 +77,7 @@ manager = ConnectionManager()
 # ─── 全局检测器 ──────────────────────────────────────────────────────────────
 
 _detector = RefusalDetector()
+_scan_cache = ScanCache()
 
 
 # ─── 会话缓存 ────────────────────────────────────────────────────────────────
@@ -113,6 +118,33 @@ def _get_cached_sessions(
         _session_cache['timestamp'] = now
 
     return sessions
+
+
+# ─── 备份清理 ──────────────────────────────────────────────────────────────
+
+def _cleanup_old_backups(session_path: str, max_backups: int = 0):
+    """保留最近 max_backups 个备份，删除多余的。max_backups=0 不限制。"""
+    if max_backups <= 0:
+        return
+    session_dir = os.path.dirname(session_path)
+    base_name = os.path.basename(session_path)
+    backups = []
+    try:
+        for f in os.listdir(session_dir):
+            if f.startswith(base_name + ".") and f.endswith(".bak"):
+                bak_path = os.path.join(session_dir, f)
+                backups.append((os.path.getmtime(bak_path), bak_path))
+    except OSError:
+        return
+    if len(backups) <= max_backups:
+        return
+    backups.sort(reverse=True)  # newest first
+    for _, path in backups[max_backups:]:
+        try:
+            os.remove(path)
+            logger.info("自动清理旧备份: %s", path)
+        except OSError:
+            logger.warning("清理备份失败: %s", path, exc_info=True)
 
 
 # ─── 格式解析工具 ────────────────────────────────────────────────────────────
@@ -164,6 +196,89 @@ def check_session_refusal(file_path: str, fmt: SessionFormat = SessionFormat.COD
     return count > 0, count
 
 
+def check_session_refusal_incremental(
+    file_path: str, fmt: SessionFormat = SessionFormat.CODEX
+) -> tuple[bool, int, list[int], int, bool, int]:
+    """Incremental refusal check using scan cache.
+
+    Returns: (has_refusal, refusal_count, refusal_lines, total_lines, was_incremental, start_line)
+    """
+    try:
+        stat = os.stat(file_path)
+    except OSError:
+        return False, 0, [], 0, False, 0
+
+    cached = _scan_cache.get(file_path)
+    if cached and _scan_cache.is_fresh(file_path, stat.st_mtime, stat.st_size):
+        return (
+            cached.get('has_refusal', False),
+            cached.get('refusal_count', 0),
+            cached.get('refusal_lines', []),
+            cached.get('last_line', 0),
+            False,  # used cache, not incremental
+            0,
+        )
+
+    strategy = get_format_strategy(fmt)
+    start_line = 0
+    if cached:
+        # If file shrank (e.g. backup restore), invalidate and full scan
+        if stat.st_size < cached.get('size', 0):
+            _scan_cache.invalidate(file_path)
+            start_line = 0
+        else:
+            start_line = cached.get('last_line', 0)
+
+    new_refusal_lines = []
+    total_lines = 0
+    try:
+        scan_lines = []
+        with open(file_path, 'r', encoding='utf-8') as f:
+            for raw_line in f:
+                raw_line = raw_line.strip()
+                if not raw_line:
+                    continue
+                total_lines += 1
+                if total_lines <= start_line:
+                    continue  # skip already-scanned lines without parsing
+                try:
+                    scan_lines.append(json.loads(raw_line))
+                except json.JSONDecodeError:
+                    scan_lines.append({})
+
+        offset = start_line
+        for msg_idx, msg in strategy.get_assistant_messages(scan_lines):
+            content = strategy.extract_text_content(msg)
+            if content and _detector.detect(content):
+                new_refusal_lines.append(offset + msg_idx + 1)  # 1-based
+    except Exception:
+        logger.warning("增量扫描失败", exc_info=True)
+        return False, 0, [], 0, False, 0
+
+    if start_line > 0 and cached:
+        _scan_cache.update_incremental(
+            file_path, stat.st_mtime, stat.st_size,
+            total_lines, new_refusal_lines,
+        )
+    else:
+        all_refusal_lines = new_refusal_lines
+        _scan_cache.update(
+            file_path, stat.st_mtime, stat.st_size,
+            total_lines, len(all_refusal_lines) > 0,
+            len(all_refusal_lines), all_refusal_lines,
+        )
+
+    entry = _scan_cache.get(file_path)
+    return (
+        entry.get('has_refusal', False),
+        entry.get('refusal_count', 0),
+        entry.get('refusal_lines', []),
+        total_lines,
+        start_line > 0,
+        start_line,
+    )
+
+
 def count_thinking_blocks(file_path: str, fmt: SessionFormat) -> int:
     """统计 Claude Code 会话中 thinking block 的数量"""
     if fmt != SessionFormat.CLAUDE_CODE:
@@ -194,13 +309,32 @@ def count_thinking_blocks(file_path: str, fmt: SessionFormat) -> int:
 def list_sessions(
     session_format: Optional[SessionFormat] = None,
     skip_refusal_check: bool = False,
+    scan_mode: str = "full",
 ) -> list[Session]:
     """列出所有会话
 
     Args:
         session_format: 指定格式，None 表示 auto（扫描两个目录）
         skip_refusal_check: 是否跳过拒绝检测
+        scan_mode: 'cached' (use scan_cache, instant), 'full' (re-scan all),
+                   'incremental' (only scan new/changed lines)
     """
+    if scan_mode == "full":
+        _scan_cache.prune_missing()
+
+    # Batch mode: defer cache writes until all sessions are scanned
+    use_batch = scan_mode in ("full", "incremental")
+    if use_batch:
+        _scan_cache.begin_batch()
+
+    try:
+        return _list_sessions_inner(session_format, skip_refusal_check, scan_mode)
+    finally:
+        if use_batch:
+            _scan_cache.end_batch()
+
+
+def _list_sessions_inner(session_format, skip_refusal_check, scan_mode):
     sessions = []
 
     # 确定需要扫描的目录
@@ -227,11 +361,23 @@ def list_sessions(
         parser = SessionParser(session_dir, session_format=fmt)
         for info in parser.list_sessions():
             try:
-                if skip_refusal_check:
-                    has_refusal = False
-                    refusal_count = 0
+                has_refusal = None
+                refusal_count = 0
+                is_cached = False
+
+                if skip_refusal_check or scan_mode == "cached":
+                    cached_entry = _scan_cache.get(info.path)
+                    if cached_entry:
+                        has_refusal = cached_entry.get('has_refusal', False)
+                        refusal_count = cached_entry.get('refusal_count', 0)
+                        is_cached = True
+                    # else: has_refusal stays None (unscanned)
+                elif scan_mode == "incremental":
+                    has_refusal, refusal_count, _, _, _, _ = check_session_refusal_incremental(info.path, info.format)
                 else:
-                    has_refusal, refusal_count = check_session_refusal(info.path, info.format)
+                    # Full scan: invalidate cache first so incremental starts from line 0
+                    _scan_cache.invalidate(info.path)
+                    has_refusal, refusal_count, _, _, _, _ = check_session_refusal_incremental(info.path, info.format)
 
                 # 检查备份文件
                 backup_count = 0
@@ -249,6 +395,7 @@ def list_sessions(
                     size=info.size,
                     has_refusal=has_refusal,
                     refusal_count=refusal_count,
+                    cached=is_cached,
                     has_backup=backup_count > 0,
                     backup_count=backup_count,
                     format=_to_schema_format(info.format),
@@ -269,15 +416,30 @@ def list_sessions(
 
             for oc_info in oc_sessions:
                 try:
-                    has_refusal = False
+                    has_refusal = None
                     refusal_count = 0
-                    if not skip_refusal_check:
+                    is_cached = False
+                    oc_cache_key = f"opencode:{oc_info['session_id']}"
+
+                    if skip_refusal_check or scan_mode == "cached":
+                        cached_entry = _scan_cache.get(oc_cache_key)
+                        if cached_entry:
+                            has_refusal = cached_entry.get('has_refusal', False)
+                            refusal_count = cached_entry.get('refusal_count', 0)
+                            is_cached = True
+                    else:
                         messages = adapter.load_session_messages(oc_info['session_id'])
-                        for _, msg in strategy.get_assistant_messages(messages):
+                        refusal_lines = []
+                        for msg_idx, msg in strategy.get_assistant_messages(messages):
                             content = strategy.extract_text_content(msg)
                             if content and detector.detect(content):
                                 refusal_count += 1
+                                refusal_lines.append(msg_idx + 1)
                         has_refusal = refusal_count > 0
+                        _scan_cache.update(
+                            oc_cache_key, 0, 0, len(messages),
+                            has_refusal, refusal_count, refusal_lines,
+                        )
 
                     sessions.append(Session(
                         id=oc_info['session_id'],
@@ -288,6 +450,7 @@ def list_sessions(
                         size=0,
                         has_refusal=has_refusal,
                         refusal_count=refusal_count,
+                        cached=is_cached,
                         has_backup=backup_count > 0,
                         backup_count=backup_count,
                         format=SessionFormatEnum.OPENCODE,
@@ -427,9 +590,11 @@ def preview_session(file_path: str, mock_response: str = MOCK_RESPONSE,
 
         if role and content:
             truncated = content[:200] + ('...' if len(content) > 200 else '')
+            search_text = content[:1000]
             conversation_summary.append(ConversationTurn(
                 role=role,
                 content=truncated,
+                search_text=search_text,
                 line_num=idx + 1,
                 has_refusal=idx in refusal_lines,
             ))
@@ -498,7 +663,9 @@ def patch_session(file_path: str, mock_response: str = MOCK_RESPONSE,
                 for idx, line in enumerate(cleaned_lines):
                     line_num = idx + 1
                     if line_num in replacements:
-                        cleaned_lines[idx] = strategy.update_text_content(line, replacements[line_num])
+                        updated = strategy.update_text_content(line, replacements[line_num])
+                        updated, _ = strategy.remove_thinking_from_message(updated)
+                        cleaned_lines[idx] = updated
 
             # 写回 SQLite
             adapter.save_session_messages(session_id, cleaned_lines)
@@ -508,6 +675,8 @@ def patch_session(file_path: str, mock_response: str = MOCK_RESPONSE,
                 timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
                 backup_path = f"{file_path}.{timestamp}.bak"
                 shutil.copy2(file_path, backup_path)
+                settings = load_settings()
+                _cleanup_old_backups(file_path, settings.max_backups_per_session)
 
             parser = SessionParser(session_format=session_format)
             lines = parser.parse_session_jsonl(file_path)
@@ -525,7 +694,10 @@ def patch_session(file_path: str, mock_response: str = MOCK_RESPONSE,
                 for idx, line in enumerate(cleaned_lines):
                     line_num = line.get('_line_num', idx + 1)
                     if line_num in replacements:
-                        cleaned_lines[idx] = strategy.update_text_content(line, replacements[line_num])
+                        updated = strategy.update_text_content(line, replacements[line_num])
+                        # Strip thinking from rewritten message -- old thinking doesn't match new content
+                        updated, _ = strategy.remove_thinking_from_message(updated)
+                        cleaned_lines[idx] = updated
 
             save_session_jsonl(cleaned_lines, file_path)
 
@@ -647,10 +819,20 @@ def compute_backup_diff(current_path: str, backup_path: str,
 # ─── API 路由 ────────────────────────────────────────────────────────────────
 
 @router.get("/sessions", response_model=SessionListResponse)
-async def get_sessions(skip_check: bool = False, limit: int = 0, format: str = "auto"):
-    """获取会话列表"""
+async def get_sessions(skip_check: bool = False, limit: int = 0, format: str = "auto", scan_mode: str = ""):
+    """获取会话列表
+
+    scan_mode: '' (default, use existing behavior), 'cached', 'full', 'incremental'
+    """
     session_format = _resolve_format(format)
-    sessions = _get_cached_sessions(session_format=session_format, skip_refusal_check=skip_check)
+    if scan_mode in ("cached", "full", "incremental"):
+        sessions = list_sessions(
+            session_format=session_format,
+            skip_refusal_check=(scan_mode == "cached"),
+            scan_mode=scan_mode,
+        )
+    else:
+        sessions = _get_cached_sessions(session_format=session_format, skip_refusal_check=skip_check)
     limited_sessions = sessions[:limit] if limit > 0 else sessions
     return SessionListResponse(
         sessions=limited_sessions,
@@ -873,6 +1055,10 @@ async def patch_session_api(session_id: str, body: PatchRequest = None):
 
     if result.success:
         _invalidate_session_cache()
+        patched_lines = [c.line_num for c in result.changes if c.type == ChangeType.REPLACE]
+        if patched_lines:
+            cache_key = f"opencode:{session_id}" if core_fmt == SessionFormat.OPENCODE else session.path
+            _scan_cache.update_after_patch(cache_key, patched_lines)
         await manager.broadcast(WSMessage(
             type="log",
             data={"level": "success", "message": result.message}
@@ -934,6 +1120,10 @@ async def restore_session(session_id: str, backup_filename: str):
     try:
         shutil.copy2(backup_path, session.path)
         _invalidate_session_cache()
+        _scan_cache.invalidate(session.path)
+        # OpenCode sessions use "opencode:{id}" as cache key
+        if session.format == SessionFormatEnum.OPENCODE:
+            _scan_cache.invalidate(f"opencode:{session_id}")
         await manager.broadcast(WSMessage(
             type="log",
             data={"level": "success", "message": f"会话 {session_id} 已从备份还原"}
@@ -941,6 +1131,285 @@ async def restore_session(session_id: str, backup_filename: str):
         return RestoreResponse(success=True, message="还原成功")
     except Exception as e:
         return RestoreResponse(success=False, message=f"还原失败: {str(e)}")
+
+
+# ─── 单条 AI 改写 ───────────────────────────────────────────────────────────
+
+@router.post("/ai-rewrite-single", response_model=SingleRewriteResponse)
+async def ai_rewrite_single_api(body: SingleRewriteRequest):
+    """对单条消息进行 AI 改写（不加载 session 文件，轻量快速）"""
+    settings = load_settings()
+
+    if not settings.ai_enabled:
+        return SingleRewriteResponse(success=False, error="AI 未启用")
+    if not settings.ai_endpoint or not settings.ai_model:
+        return SingleRewriteResponse(success=False, error="AI 配置不完整")
+
+    try:
+        from .ai_service import generate_single_rewrite
+        replacement = await generate_single_rewrite(
+            settings, body.original_content, body.context_before,
+        )
+        return SingleRewriteResponse(success=True, replacement=replacement)
+    except Exception as e:
+        return SingleRewriteResponse(success=False, error=str(e))
+
+
+# ─── 单 Session 扫描 ────────────────────────────────────────────────────────
+
+@router.post("/sessions/{session_id}/scan", response_model=ScanSessionResponse)
+async def scan_session_api(session_id: str, mode: str = "full"):
+    """扫描单个 session 的拒绝内容
+
+    Args:
+        mode: 'full' (从头扫) | 'incremental' (只扫新增行)
+    """
+    session = _find_session(session_id)
+    if session is None:
+        raise HTTPException(status_code=404, detail="会话不存在")
+
+    core_fmt = _session_core_format(session)
+
+    if core_fmt == SessionFormat.OPENCODE:
+        adapter = OpenCodeDBAdapter()
+        strategy = get_format_strategy(SessionFormat.OPENCODE)
+        messages = adapter.load_session_messages(session_id)
+        refusal_lines = []
+        for msg_idx, msg in strategy.get_assistant_messages(messages):
+            content = strategy.extract_text_content(msg)
+            if content and _detector.detect(content):
+                refusal_lines.append(msg_idx + 1)
+        return ScanSessionResponse(
+            has_refusal=len(refusal_lines) > 0,
+            refusal_count=len(refusal_lines),
+            refusal_lines=refusal_lines,
+            scanned_lines=len(messages),
+            incremental=False,
+        )
+
+    if mode == "incremental":
+        has_refusal, count, lines, total, was_incr, from_line = check_session_refusal_incremental(session.path, core_fmt)
+        return ScanSessionResponse(
+            has_refusal=has_refusal,
+            refusal_count=count,
+            refusal_lines=lines,
+            scanned_lines=total,
+            incremental=was_incr,
+            incremental_from_line=from_line,
+        )
+
+    # full scan: invalidate cache first so incremental scans from line 0
+    _scan_cache.invalidate(session.path)
+    has_refusal, count, refusal_lines, total, _, _ = check_session_refusal_incremental(session.path, core_fmt)
+    return ScanSessionResponse(
+        has_refusal=has_refusal,
+        refusal_count=count,
+        refusal_lines=refusal_lines,
+        scanned_lines=total,
+        incremental=False,
+    )
+
+
+# ─── 单条消息删除 ──────────────────────────────────────────────────────────
+
+@router.post("/sessions/{session_id}/messages/delete", response_model=DeleteMessagesResponse)
+async def delete_messages_api(session_id: str, body: DeleteMessagesRequest):
+    """删除指定行号的消息"""
+    session = _find_session(session_id)
+    if session is None:
+        raise HTTPException(status_code=404, detail="会话不存在")
+
+    core_fmt = _session_core_format(session)
+
+    if core_fmt == SessionFormat.OPENCODE:
+        # OpenCode: delete from SQLite
+        adapter = OpenCodeDBAdapter()
+        messages = adapter.load_session_messages(session_id)
+        oc_backup_path = None
+        if body.create_backup:
+            oc_backup_path = adapter.create_backup()
+            settings = load_settings()
+            _cleanup_old_backups(adapter.db_path, settings.max_backups_per_session)
+        remaining, deleted = delete_session_lines(
+            messages, body.line_nums, session_format=core_fmt, delete_paired=body.delete_paired
+        )
+        # Rebuild and save -- for OpenCode we mark deleted messages for removal
+        # by comparing original vs remaining message IDs
+        original_ids = {m.get('_oc_msg_id') for m in messages if m.get('_oc_msg_id')}
+        remaining_ids = {m.get('_oc_msg_id') for m in remaining if m.get('_oc_msg_id')}
+        deleted_msg_ids = original_ids - remaining_ids
+        if deleted_msg_ids:
+            try:
+                conn = sqlite3.connect(adapter.db_path)
+                cursor = conn.cursor()
+                for msg_id in deleted_msg_ids:
+                    cursor.execute("DELETE FROM part WHERE message_id = ?", (msg_id,))
+                    cursor.execute("DELETE FROM message WHERE id = ?", (msg_id,))
+                conn.commit()
+                conn.close()
+            except Exception as e:
+                try:
+                    conn.rollback()
+                    conn.close()
+                except Exception:
+                    pass
+                return DeleteMessagesResponse(
+                    success=False, message=f"删除失败: {e}", deleted_lines=[]
+                )
+        oc_cache_key = f"opencode:{session_id}"
+        _scan_cache.update_after_delete(oc_cache_key, deleted)
+        _invalidate_session_cache()
+        return DeleteMessagesResponse(
+            success=True,
+            message=f"已删除 {len(deleted)} 行",
+            deleted_lines=deleted,
+            backup_path=oc_backup_path,
+        )
+
+    # JSONL path (Codex / Claude Code)
+    if body.create_backup:
+        backup_name = f"{os.path.basename(session.path)}.{datetime.now().strftime('%Y%m%d_%H%M%S')}.bak"
+        backup_path = os.path.join(os.path.dirname(session.path), backup_name)
+        shutil.copy2(session.path, backup_path)
+        settings = load_settings()
+        _cleanup_old_backups(session.path, settings.max_backups_per_session)
+    else:
+        backup_path = None
+
+    parser = SessionParser(os.path.dirname(session.path), session_format=core_fmt)
+    lines = parser.parse_session(session.path)
+
+    remaining, deleted = delete_session_lines(
+        lines, body.line_nums, session_format=core_fmt, delete_paired=body.delete_paired
+    )
+    if not remaining:
+        return DeleteMessagesResponse(
+            success=False,
+            message="操作会删除所有消息，已阻止。如需清空请使用备份还原功能。",
+            deleted_lines=[],
+        )
+    save_session_jsonl(remaining, session.path)
+
+    _scan_cache.update_after_delete(session.path, deleted)
+    _invalidate_session_cache()
+
+    await manager.broadcast(WSMessage(
+        type="log",
+        data={"level": "success", "message": f"已删除 {len(deleted)} 行消息"}
+    ))
+
+    return DeleteMessagesResponse(
+        success=True,
+        message=f"已删除 {len(deleted)} 行",
+        deleted_lines=deleted,
+        backup_path=backup_path,
+    )
+
+
+# ─── 清理 Thinking Blocks ──────────────────────────────────────────────────
+
+@router.post("/sessions/{session_id}/clean-thinking", response_model=PatchResponse)
+async def clean_thinking_api(session_id: str):
+    """单独清理 session 中的 thinking/reasoning blocks，不影响其他内容。
+
+    用于解决跨 provider (如 AWS Bedrock) 切换时 thinking signature 冲突的问题。
+    """
+    session = _find_session(session_id)
+    if session is None:
+        raise HTTPException(status_code=404, detail="会话不存在")
+
+    core_fmt = _session_core_format(session)
+    strategy = get_format_strategy(core_fmt)
+
+    if core_fmt == SessionFormat.OPENCODE:
+        adapter = OpenCodeDBAdapter()
+        messages = adapter.load_session_messages(session_id)
+        oc_backup_path = adapter.create_backup()
+        settings = load_settings()
+        _cleanup_old_backups(adapter.db_path, settings.max_backups_per_session)
+        changes = []
+        modified = False
+        for idx, line in enumerate(messages):
+            updated, removed = strategy.remove_thinking_from_message(line)
+            if removed > 0:
+                changes.append(ChangeDetail(
+                    line_num=idx + 1,
+                    type=ChangeType.REMOVE_THINKING,
+                    original=f"移除 {removed} 个 thinking block",
+                ))
+                messages[idx] = updated
+                modified = True
+        if modified:
+            adapter.save_session_messages(session_id, messages)
+        _invalidate_session_cache()
+        _scan_cache.invalidate(f"opencode:{session_id}")
+        return PatchResponse(
+            success=True,
+            message=f"已清理 {len(changes)} 条消息中的 thinking blocks",
+            backup_path=oc_backup_path if modified else None,
+            changes=changes,
+        )
+
+    # JSONL path
+    parser = SessionParser(os.path.dirname(session.path), session_format=core_fmt)
+    lines = parser.parse_session(session.path)
+
+    changes = []
+
+    # Remove standalone thinking/reasoning lines (Codex)
+    thinking_items = strategy.get_thinking_items(lines)
+    for idx, _ in thinking_items:
+        changes.append(ChangeDetail(
+            line_num=idx + 1,
+            type=ChangeType.DELETE,
+            original="独立 reasoning 行",
+        ))
+        lines[idx] = None
+
+    # Remove embedded thinking blocks (Claude Code / OpenCode)
+    for idx, line in enumerate(lines):
+        if line is None:
+            continue
+        updated, removed = strategy.remove_thinking_from_message(line)
+        if removed > 0:
+            changes.append(ChangeDetail(
+                line_num=idx + 1,
+                type=ChangeType.REMOVE_THINKING,
+                original=f"移除 {removed} 个 thinking block",
+            ))
+            lines[idx] = updated
+
+    if not changes:
+        return PatchResponse(
+            success=True,
+            message="没有需要清理的 thinking blocks",
+            changes=[],
+        )
+
+    # Create backup only when there are actual changes
+    backup_name = f"{os.path.basename(session.path)}.{datetime.now().strftime('%Y%m%d_%H%M%S')}.bak"
+    backup_path = os.path.join(os.path.dirname(session.path), backup_name)
+    shutil.copy2(session.path, backup_path)
+    settings = load_settings()
+    _cleanup_old_backups(session.path, settings.max_backups_per_session)
+
+    lines = [l for l in lines if l is not None]
+    save_session_jsonl(lines, session.path)
+
+    _invalidate_session_cache()
+    _scan_cache.invalidate(session.path)
+
+    await manager.broadcast(WSMessage(
+        type="log",
+        data={"level": "success", "message": f"已清理 {len(changes)} 处 thinking blocks"}
+    ))
+
+    return PatchResponse(
+        success=True,
+        message=f"已清理 {len(changes)} 处 thinking blocks",
+        backup_path=backup_path,
+        changes=changes,
+    )
 
 
 # ─── 设置 API ────────────────────────────────────────────────────────────────
