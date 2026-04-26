@@ -191,7 +191,8 @@
                 </template>
                 <div class="content-block original">
                   <div class="content-label">{{ $t('preview.original') }}</div>
-                  <pre>{{ change.original }}</pre>
+                  <pre v-if="change.matched_keywords && change.matched_keywords.length" v-html="highlightKeywords(change.original, change.matched_keywords)"></pre>
+                  <pre v-else>{{ change.original }}</pre>
                 </div>
                 <div class="content-arrow">
                   <n-icon size="20" color="#18a058">
@@ -277,7 +278,8 @@
               <div class="diff-line deleted">
                 <span class="line-number">{{ change.line_num }}</span>
                 <span class="diff-marker">-</span>
-                <pre class="diff-text">{{ change.original }}</pre>
+                <pre v-if="change.matched_keywords && change.matched_keywords.length" class="diff-text" v-html="highlightKeywords(change.original, change.matched_keywords)"></pre>
+                <pre v-else class="diff-text">{{ change.original }}</pre>
               </div>
               <div class="diff-line added">
                 <span class="line-number">{{ change.line_num }}</span>
@@ -361,7 +363,8 @@
                   </n-dropdown>
                 </div>
               </div>
-              <pre class="turn-content" :class="{ refusal: turn.has_refusal }">{{ turn.content }}</pre>
+              <pre v-if="turn.has_refusal && turn.matched_keywords && turn.matched_keywords.length" class="turn-content refusal" v-html="highlightKeywords(turn.content, turn.matched_keywords)"></pre>
+              <pre v-else class="turn-content" :class="{ refusal: turn.has_refusal }">{{ turn.content }}</pre>
             </div>
           </div>
         </div>
@@ -503,6 +506,18 @@ const isAllSelected = computed(() => {
 // 获取选中的行号列表
 function getSelectedLines() {
   return Array.from(selectedLines.value)
+}
+
+// 高亮文本中的关键字
+function highlightKeywords(text, keywords) {
+  if (!keywords || keywords.length === 0 || !text) return text
+  let result = text
+  const sorted = [...keywords].sort((a, b) => b.length - a.length)
+  for (const kw of sorted) {
+    const regex = new RegExp(`(${kw.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')})`, 'gi')
+    result = result.replace(regex, '<mark class="refusal-keyword">$1</mark>')
+  }
+  return result
 }
 
 // 根据行号找到前一个 user 提问
@@ -712,6 +727,14 @@ watch(() => sessionStore.selectedId, () => {
 .turn-content.refusal {
   color: var(--error-color, #e06060);
 }
+.turn-content :deep(.refusal-keyword),
+.turn-content .refusal-keyword {
+  background: rgba(224, 60, 60, 0.25);
+  color: #ff4040;
+  font-weight: 700;
+  padding: 1px 3px;
+  border-radius: 2px;
+}
 .preview-panel {
   flex: 1;
   overflow: hidden;
@@ -824,8 +847,9 @@ watch(() => sessionStore.selectedId, () => {
 
 .line-num {
   font-size: 12px;
-  color: var(--color-text-3, #888);
+  color: var(--error-color, #e06060);
   font-family: monospace;
+  font-weight: 600;
 }
 
 .change-content {
@@ -906,7 +930,8 @@ watch(() => sessionStore.selectedId, () => {
 .line-number {
   min-width: 40px;
   padding: 0 8px;
-  color: var(--color-text-4, #666);
+  color: var(--error-color, #e06060);
+  font-weight: 600;
   text-align: right;
   user-select: none;
 }

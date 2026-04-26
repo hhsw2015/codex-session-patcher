@@ -90,3 +90,31 @@ class RefusalDetector:
                         return True
 
         return False
+
+    def detect_with_matches(self, content: str) -> tuple:
+        """检测拒绝并返回匹配的关键字列表。
+
+        Returns: (is_refusal: bool, matched_keywords: list[str])
+        """
+        if not content:
+            return False, []
+
+        content_lower = content.lower()
+        matched = []
+
+        for phrase in self.STRONG_REFUSAL_PHRASES:
+            if phrase in content_lower:
+                matched.append(phrase)
+
+        head = content_lower[:150]
+        for keyword in self.WEAK_REFUSAL_KEYWORDS:
+            if keyword in head:
+                matched.append(keyword)
+
+        if self.keywords:
+            for lang, lang_keywords in self.keywords.items():
+                for keyword in lang_keywords:
+                    if keyword.lower() in content_lower:
+                        matched.append(keyword)
+
+        return len(matched) > 0, matched

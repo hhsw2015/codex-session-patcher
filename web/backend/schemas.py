@@ -27,6 +27,7 @@ class ChangeDetail(BaseModel):
     original: Optional[str] = None
     replacement: Optional[str] = None
     content: Optional[str] = None  # for delete type
+    matched_keywords: List[str] = []  # 匹配到的拒绝关键字
 
 
 class Session(BaseModel):
@@ -67,6 +68,7 @@ class ConversationTurn(BaseModel):
     search_text: str = ""  # 截取前 1000 字符（搜索用，不显示）
     line_num: int       # 原始行号
     has_refusal: bool = False  # 是否包含拒绝
+    matched_keywords: List[str] = []  # 匹配到的拒绝关键字
 
 
 class PreviewResponse(BaseModel):

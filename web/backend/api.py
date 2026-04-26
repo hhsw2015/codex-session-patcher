@@ -520,14 +520,19 @@ def preview_session(file_path: str, mock_response: str = MOCK_RESPONSE,
     # 检测拒绝 & 收集对话摘要
     assistant_msgs = strategy.get_assistant_messages(parsed_lines)
     refusal_lines = set()
+    refusal_keywords_map: dict[int, list[str]] = {}  # idx -> matched keywords
     # 先收集所有拒绝行（含 event_msg 冗余副本），按内容分组
     refusal_groups: dict[int, list[int]] = {}  # primary_idx -> [companion_idxs]
     primary_order: list[int] = []
     for idx, msg in assistant_msgs:
         content = strategy.extract_text_content(msg)
-        if not content or not detector.detect(content):
+        if not content:
+            continue
+        is_refusal, matches = detector.detect_with_matches(content)
+        if not is_refusal:
             continue
         refusal_lines.add(idx)
+        refusal_keywords_map[idx] = matches
         if msg.get('type') == 'event_msg':
             # 冗余副本：挂到最近的 primary 下
             if primary_order:
@@ -546,7 +551,8 @@ def preview_session(file_path: str, mock_response: str = MOCK_RESPONSE,
             line_nums=all_line_nums,
             type=ChangeType.REPLACE,
             original=content[:500] + ('...' if len(content) > 500 else ''),
-            replacement=mock_response
+            replacement=mock_response,
+            matched_keywords=refusal_keywords_map.get(primary_idx, []),
         ))
 
     # 收集对话摘要（user + assistant 消息）
@@ -603,6 +609,7 @@ def preview_session(file_path: str, mock_response: str = MOCK_RESPONSE,
                 search_text=search_text,
                 line_num=idx + 1,
                 has_refusal=idx in refusal_lines,
+                matched_keywords=refusal_keywords_map.get(idx, []),
             ))
 
     # 统计推理内容（Codex 格式独立行）
