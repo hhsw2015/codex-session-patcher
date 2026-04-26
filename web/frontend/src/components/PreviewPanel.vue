@@ -147,7 +147,7 @@
 
           <div class="changes-list">
             <div
-              v-for="(change, index) in preview.changes"
+              v-for="(change, index) in reversedChanges"
               :key="index"
               class="change-item"
               :class="{ unselected: !selectedLines.has(change.line_num) }"
@@ -255,7 +255,7 @@
         <!-- 未清理会话：显示待修改的 diff -->
         <div v-else-if="preview.has_changes" class="diff-content">
           <div
-            v-for="(change, index) in preview.changes"
+            v-for="(change, index) in reversedChanges"
             :key="index"
             class="diff-block"
           >
@@ -402,6 +402,10 @@ const selectedLines = ref(new Set())
 
 const session = computed(() => sessionStore.getSelectedSession())
 const preview = computed(() => sessionStore.preview)
+const reversedChanges = computed(() => {
+  if (!preview.value?.changes) return []
+  return [...preview.value.changes].reverse()
+})
 const conversationView = ref('refusal') // 'refusal' | 'all' | 'incremental'
 const conversationSearch = ref('')
 const debouncedSearch = ref('')
@@ -728,9 +732,13 @@ watch(() => sessionStore.selectedId, () => {
   color: var(--error-color, #e06060);
 }
 .turn-content :deep(.refusal-keyword),
-.turn-content .refusal-keyword {
-  background: rgba(224, 60, 60, 0.25);
-  color: #ff4040;
+.turn-content .refusal-keyword,
+.content-block :deep(.refusal-keyword),
+.content-block .refusal-keyword,
+.diff-text :deep(.refusal-keyword),
+.diff-text .refusal-keyword {
+  background: rgba(240, 200, 40, 0.35);
+  color: #f0c828;
   font-weight: 700;
   padding: 1px 3px;
   border-radius: 2px;
@@ -1094,6 +1102,9 @@ watch(() => sessionStore.selectedId, () => {
 
 .summary-turn.assistant {
   border-left: 3px solid #18a058;
+}
+.summary-turn.assistant.has-refusal {
+  border-left: 3px solid var(--error-color, #e06060);
 }
 
 .turn-header {
