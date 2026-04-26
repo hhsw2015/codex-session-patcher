@@ -169,13 +169,6 @@
                   </template>
                   <template v-else>L{{ change.line_num }}</template>
                 </span>
-                <div v-if="change.type === 'replace'" class="turn-actions" style="margin-left: auto">
-                  <n-dropdown :options="messageActions" size="small" @select="(key) => handleMessageAction(key, { line_num: change.line_num, content: change.original || '' })">
-                    <n-button text size="tiny" type="default">
-                      <template #icon><n-icon size="14"><EllipsisHorizontalOutline /></n-icon></template>
-                    </n-button>
-                  </n-dropdown>
-                </div>
               </div>
 
               <div v-if="change.type === 'replace'" class="change-content">
@@ -190,7 +183,16 @@
                   </div>
                 </template>
                 <div class="content-block original">
-                  <div class="content-label">{{ $t('preview.original') }}</div>
+                  <div class="content-label" style="display: flex; align-items: center; gap: 6px">
+                    {{ $t('preview.original') }}
+                    <div class="turn-actions" style="margin-left: auto">
+                      <n-dropdown :options="messageActions" size="small" @select="(key) => handleMessageAction(key, { line_num: change.line_num, content: change.original || '' })">
+                        <n-button text size="tiny" type="default">
+                          <template #icon><n-icon size="14"><EllipsisHorizontalOutline /></n-icon></template>
+                        </n-button>
+                      </n-dropdown>
+                    </div>
+                  </div>
                   <pre v-if="change.matched_keywords && change.matched_keywords.length" v-html="highlightKeywords(change.original, change.matched_keywords)"></pre>
                   <pre v-else>{{ change.original }}</pre>
                 </div>
