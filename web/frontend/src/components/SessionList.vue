@@ -435,6 +435,7 @@ async function scanFull() {
   loading.value = true
   try {
     await sessionStore.fetchSessions(false, 'auto', 'full')
+    if (sessionStore.selectedId) await sessionStore.previewSession(sessionStore.selectedId)
   } finally {
     loading.value = false
   }
@@ -444,6 +445,7 @@ async function scanIncremental() {
   loading.value = true
   try {
     await sessionStore.fetchSessions(false, 'auto', 'incremental')
+    if (sessionStore.selectedId) await sessionStore.previewSession(sessionStore.selectedId)
   } finally {
     loading.value = false
   }
@@ -452,6 +454,7 @@ async function scanIncremental() {
 async function scanSingle(id, mode = 'full') {
   try {
     await sessionStore.scanSingleSession(id, mode)
+    if (sessionStore.selectedId === id) await sessionStore.previewSession(id)
   } catch (e) {
     console.error('Scan failed:', e)
   }
