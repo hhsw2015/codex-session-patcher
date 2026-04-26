@@ -587,68 +587,45 @@ async function handleMessageAction(action, turn) {
   const lastAssistant = group.assistantTurns[group.assistantTurns.length - 1] || turn
 
   if (action === 'revoke') {
-    const desc = group.allLineNums.map(n => 'L' + n).join(', ')
-    if (!confirm(`确定撤回整组对话？将删除 ${group.allLineNums.length} 条消息 (${desc})`)) return
-    await sessionStore.deleteMessages(sessionId, group.allLineNums, true)
-
-  } else if (action === 'delete') {
-    const desc = assistantLineNums.map(n => 'L' + n).join(', ')
-    if (!confirm(`确定删除该组全部 ${assistantLineNums.length} 条 AI 回复？用户问题保留。(${desc})`)) return
-    await sessionStore.deleteMessages(sessionId, assistantLineNums, true)
-
-  } else if (action === 'rewrite') {
-    const newText = prompt('输入替换内容（将替换该组所有 AI 回复为一条）:', lastAssistant.content)
-    if (newText === null || newText === lastAssistant.content) return
-    // Step 1: rewrite last assistant FIRST (line numbers unchanged at this point)
-    const { patchSession: rawPatch, deleteMessages: rawDelete } = await import('../services/api')
-    const replacements = [{ line_num: lastAssistant.line_num, replacement_text: newText }]
-    const patchResult = await rawPatch(sessionId, replacements, [lastAssistant.line_num])
-    if (patchResult.backup_path) {
-      sessionStore.undoStack.push({ sessionId, operation: 'rewrite-group', backupPath: patchResult.backup_path, description: `改写 L${lastAssistant.line_num}` })
+    // Revoke: use backend group-action to delete entire group (including hidden tool_use lines)
+    if (!confirm(`确定撤回整组对话？将删除用户问题及所有 AI 回复。(L${turn.line_num})`)) return
+    const { groupAction } = await import('../services/api')
+    const result = await groupAction(sessionId, turn.line_num, 'revoke')
+    if (result.backup_path) {
+      sessionStore.undoStack.push({ sessionId, operation: 'revoke', backupPath: result.backup_path, description: `撤回 L${turn.line_num} 整组` })
     }
-    // Step 2: delete other assistants in group (line shift doesn't matter now)
-    const toDelete = assistantLineNums.slice(0, -1)
-    if (toDelete.length > 0) {
-      const delResult = await rawDelete(sessionId, toDelete, true)
-      if (delResult.backup_path) {
-        sessionStore.undoStack.push({ sessionId, operation: 'rewrite-group-delete', backupPath: delResult.backup_path, description: `删除组内 ${toDelete.length} 条中间回复` })
-      }
-    }
-    // Step 3: reload
     await sessionStore.fetchSessions()
     await sessionStore.previewSession(sessionId)
 
+  } else if (action === 'delete') {
+    // Delete: only delete this one assistant reply (+ its tool_result pair via backend)
+    if (!confirm(`确定删除这条回复？(L${turn.line_num})`)) return
+    await sessionStore.deleteMessages(sessionId, [turn.line_num], true)
+
+  } else if (action === 'rewrite') {
+    // Rewrite: only rewrite this one assistant reply
+    const newText = prompt('输入替换内容:', turn.content)
+    if (newText === null || newText === turn.content) return
+    const replacements = [{ line_num: turn.line_num, replacement_text: newText }]
+    await sessionStore.patchSession(sessionId, [turn.line_num], null, replacements)
+
   } else if (action === 'ai-rewrite') {
+    // AI rewrite: this one assistant reply, with user question as context
     const contextBefore = group.userTurn
       ? (group.userTurn.search_text || group.userTurn.content || '')
       : ''
-    const originalContent = lastAssistant.search_text || lastAssistant.content || ''
+    const originalContent = turn.search_text || turn.content || ''
     try {
-      const { aiRewriteSingle, patchSession: rawPatch, deleteMessages: rawDelete } = await import('../services/api')
+      const { aiRewriteSingle } = await import('../services/api')
       const result = await aiRewriteSingle(originalContent, contextBefore)
       if (!result.success) {
         alert('AI 改写失败: ' + (result.error || '未知错误'))
         return
       }
-      const confirmed = prompt('AI 改写结果（可编辑后确认，将替换该组所有 AI 回复为一条）:', result.replacement)
+      const confirmed = prompt('AI 改写结果（可编辑后确认）:', result.replacement)
       if (confirmed === null) return
-      // Step 1: rewrite last assistant FIRST
-      const replacements = [{ line_num: lastAssistant.line_num, replacement_text: confirmed }]
-      const patchResult = await rawPatch(sessionId, replacements, [lastAssistant.line_num])
-      if (patchResult.backup_path) {
-        sessionStore.undoStack.push({ sessionId, operation: 'ai-rewrite-group', backupPath: patchResult.backup_path, description: `AI 改写 L${lastAssistant.line_num}` })
-      }
-      // Step 2: delete other assistants
-      const toDelete = assistantLineNums.slice(0, -1)
-      if (toDelete.length > 0) {
-        const delResult = await rawDelete(sessionId, toDelete, true)
-        if (delResult.backup_path) {
-          sessionStore.undoStack.push({ sessionId, operation: 'ai-rewrite-group-delete', backupPath: delResult.backup_path, description: `删除组内 ${toDelete.length} 条中间回复` })
-        }
-      }
-      // Step 3: reload
-      await sessionStore.fetchSessions()
-      await sessionStore.previewSession(sessionId)
+      const replacements = [{ line_num: turn.line_num, replacement_text: confirmed }]
+      await sessionStore.patchSession(sessionId, [turn.line_num], null, replacements)
     } catch (e) {
       alert('AI 改写失败: ' + e.message)
     }

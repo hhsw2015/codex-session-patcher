@@ -155,6 +155,14 @@ class PatchRequest(BaseModel):
     clean_reasoning: Optional[bool] = None  # 是否清理推理内容，None 表示使用设置中的默认值
 
 
+class GroupActionRequest(BaseModel):
+    """组操作请求 - 基于组内任一行号定位整组"""
+    anchor_line_num: int          # 组内任一消息的行号（用于定位整组）
+    action: str = "delete"        # "delete" (删除所有AI回复) | "revoke" (删除整组含user)
+    replacement_text: Optional[str] = None  # action="rewrite" 时的替换文本
+    create_backup: bool = True
+
+
 class DeleteMessagesRequest(BaseModel):
     """删除消息请求"""
     line_nums: List[int]

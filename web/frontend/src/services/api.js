@@ -123,6 +123,14 @@ export async function aiRewriteSingle(originalContent, contextBefore = '') {
   })
 }
 
+// 组操作（删除/撤回/改写整组，基于实际文件行）
+export async function groupAction(id, anchorLineNum, action, replacementText = null) {
+  clearCache('sessions')
+  const body = { anchor_line_num: anchorLineNum, action }
+  if (replacementText !== null) body.replacement_text = replacementText
+  return request(`/sessions/${id}/group-action`, { method: 'POST', body: JSON.stringify(body) })
+}
+
 // 清理 thinking blocks
 export async function cleanThinking(id) {
   clearCache('sessions')

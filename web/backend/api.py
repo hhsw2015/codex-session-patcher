@@ -25,7 +25,7 @@ from .schemas import (
     CTFStatusResponse, CTFInstallResponse, PromptRewriteRequest, PromptRewriteResponse,
     ConversationTurn,
     DeleteMessagesRequest, DeleteMessagesResponse, ScanSessionResponse,
-    SingleRewriteRequest, SingleRewriteResponse,
+    SingleRewriteRequest, SingleRewriteResponse, GroupActionRequest,
 )
 
 from codex_session_patcher.core import (
@@ -39,7 +39,7 @@ from codex_session_patcher.core import (
     get_reasoning_items,
     MOCK_RESPONSE,
 )
-from codex_session_patcher.core.patcher import clean_session_jsonl, save_session_jsonl, delete_session_lines
+from codex_session_patcher.core.patcher import clean_session_jsonl, save_session_jsonl, delete_session_lines, find_group_lines
 from codex_session_patcher.core.scan_cache import ScanCache
 try:
     from .file_watcher import SessionWatcher
@@ -1310,6 +1310,123 @@ async def delete_messages_api(session_id: str, body: DeleteMessagesRequest):
         type="log",
         data={"level": "success", "message": f"已删除 {len(deleted)} 行消息"}
     ))
+
+    return DeleteMessagesResponse(
+        success=True,
+        message=f"已删除 {len(deleted)} 行",
+        deleted_lines=deleted,
+        backup_path=backup_path,
+    )
+
+
+# ─── 组操作（基于实际文件行，不受 summary 限制）─────────────────────────────
+
+@router.post("/sessions/{session_id}/group-action", response_model=DeleteMessagesResponse)
+async def group_action_api(session_id: str, body: GroupActionRequest):
+    """对整组对话执行操作（删除/撤回/改写），基于实际文件行而非 summary。"""
+    session = _find_session(session_id)
+    if session is None:
+        raise HTTPException(status_code=404, detail="会话不存在")
+
+    core_fmt = _session_core_format(session)
+
+    # Load session
+    if core_fmt == SessionFormat.OPENCODE:
+        adapter = OpenCodeDBAdapter()
+        lines = adapter.load_session_messages(session_id)
+    else:
+        parser = SessionParser(os.path.dirname(session.path), session_format=core_fmt)
+        lines = parser.parse_session(session.path)
+
+    include_user = (body.action == "revoke")
+    group_lines = find_group_lines(lines, body.anchor_line_num, core_fmt, include_user=include_user)
+
+    if not group_lines:
+        return DeleteMessagesResponse(success=False, message="未找到对应消息组", deleted_lines=[])
+
+    if body.action == "rewrite" and body.replacement_text is not None:
+        # Rewrite: keep last assistant in group, replace its text, delete the rest
+        # Find last assistant line in group
+        assistant_lines = [n for n in group_lines if lines[n - 1].get('type') != 'human'
+                          and lines[n - 1].get('type') != 'user'
+                          and lines[n - 1].get('type') != 'user_message']
+        if not assistant_lines:
+            return DeleteMessagesResponse(success=False, message="组内无 AI 回复", deleted_lines=[])
+
+        last_assistant = assistant_lines[-1]
+        to_delete = [n for n in group_lines if n != last_assistant]
+
+        # Backup
+        backup_path = None
+        if body.create_backup:
+            if core_fmt == SessionFormat.OPENCODE:
+                backup_path = adapter.create_backup()
+            else:
+                backup_name = f"{os.path.basename(session.path)}.{datetime.now().strftime('%Y%m%d_%H%M%S')}.bak"
+                backup_path = os.path.join(os.path.dirname(session.path), backup_name)
+                shutil.copy2(session.path, backup_path)
+            settings = load_settings()
+            _cleanup_old_backups(session.path if core_fmt != SessionFormat.OPENCODE else adapter.db_path, settings.max_backups_per_session)
+
+        # Step 1: rewrite last assistant (no line shift)
+        strategy = get_format_strategy(core_fmt)
+        updated = strategy.update_text_content(lines[last_assistant - 1], body.replacement_text)
+        updated, _ = strategy.remove_thinking_from_message(updated)
+        lines[last_assistant - 1] = updated
+
+        # Step 2: delete others
+        remaining, deleted = delete_session_lines(lines, to_delete, core_fmt, delete_paired=True)
+
+        if core_fmt == SessionFormat.OPENCODE:
+            adapter.save_session_messages(session_id, remaining)
+            cache_key = f"opencode:{session_id}"
+        else:
+            save_session_jsonl(remaining, session.path)
+            cache_key = session.path
+
+        _scan_cache.invalidate(cache_key)
+        _invalidate_session_cache()
+        return DeleteMessagesResponse(success=True, message=f"改写完成，删除 {len(deleted)} 行", deleted_lines=deleted, backup_path=backup_path)
+
+    # Delete or Revoke
+    backup_path = None
+    if body.create_backup:
+        if core_fmt == SessionFormat.OPENCODE:
+            backup_path = adapter.create_backup()
+        else:
+            backup_name = f"{os.path.basename(session.path)}.{datetime.now().strftime('%Y%m%d_%H%M%S')}.bak"
+            backup_path = os.path.join(os.path.dirname(session.path), backup_name)
+            shutil.copy2(session.path, backup_path)
+        settings = load_settings()
+        _cleanup_old_backups(session.path if core_fmt != SessionFormat.OPENCODE else adapter.db_path, settings.max_backups_per_session)
+
+    remaining, deleted = delete_session_lines(lines, group_lines, core_fmt, delete_paired=True)
+
+    if not remaining:
+        return DeleteMessagesResponse(success=False, message="操作会删除所有消息，已阻止", deleted_lines=[])
+
+    if core_fmt == SessionFormat.OPENCODE:
+        original_ids = {m.get('_oc_msg_id') for m in lines if m.get('_oc_msg_id')}
+        remaining_ids = {m.get('_oc_msg_id') for m in remaining if m.get('_oc_msg_id')}
+        deleted_ids = original_ids - remaining_ids
+        if deleted_ids:
+            try:
+                conn = sqlite3.connect(adapter.db_path)
+                cursor = conn.cursor()
+                for msg_id in deleted_ids:
+                    cursor.execute("DELETE FROM part WHERE message_id = ?", (msg_id,))
+                    cursor.execute("DELETE FROM message WHERE id = ?", (msg_id,))
+                conn.commit()
+                conn.close()
+            except Exception as e:
+                return DeleteMessagesResponse(success=False, message=f"删除失败: {e}", deleted_lines=[])
+        cache_key = f"opencode:{session_id}"
+    else:
+        save_session_jsonl(remaining, session.path)
+        cache_key = session.path
+
+    _scan_cache.update_after_delete(cache_key, deleted)
+    _invalidate_session_cache()
 
     return DeleteMessagesResponse(
         success=True,

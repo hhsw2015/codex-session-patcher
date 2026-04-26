@@ -229,6 +229,54 @@ def delete_session_lines(
     return remaining, deleted_sorted
 
 
+def find_group_lines(
+    lines: List[Dict[str, Any]],
+    anchor_line_num: int,
+    session_format: SessionFormat = SessionFormat.CODEX,
+    include_user: bool = False,
+) -> List[int]:
+    """Find all line numbers in the conversation group containing anchor_line_num.
+
+    A group = one user message + all subsequent non-user messages until the next user.
+    Returns 1-based line numbers of assistant/tool lines in the group.
+    If include_user=True, also includes the user message.
+    """
+    strategy = get_format_strategy(session_format)
+    anchor_idx = anchor_line_num - 1
+    if anchor_idx < 0 or anchor_idx >= len(lines):
+        return [anchor_line_num]
+
+    # Find group start: scan backward to find user message
+    group_start = anchor_idx
+    for i in range(anchor_idx - 1, -1, -1):
+        line = lines[i]
+        line_type = line.get('type', '')
+        if session_format == SessionFormat.CODEX:
+            if line_type == 'user_message':
+                group_start = i
+                break
+        else:
+            if line_type in ('human', 'user'):
+                group_start = i
+                break
+
+    # Find group end: scan forward from group_start until next user
+    group_end = len(lines) - 1
+    user_types = {'user_message'} if session_format == SessionFormat.CODEX else {'human', 'user'}
+    for i in range(group_start + 1, len(lines)):
+        if lines[i].get('type', '') in user_types:
+            group_end = i - 1
+            break
+
+    result = []
+    for i in range(group_start, group_end + 1):
+        is_user = lines[i].get('type', '') in user_types
+        if is_user and not include_user:
+            continue
+        result.append(i + 1)
+    return result
+
+
 def save_session_jsonl(lines: List[Dict[str, Any]], file_path: str) -> None:
     """保存 JSONL 会话数据"""
     try:
