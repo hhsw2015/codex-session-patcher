@@ -266,6 +266,16 @@ const connectWebSocket = () => {
       if (data.type === 'log') {
         const { level, message } = data.data
         logStore.addLog(message, level)
+      } else if (data.type === 'session_update') {
+        // Real-time monitor: update session refusal status
+        const info = data.data
+        const session = sessionStore.sessions.find(s => s.path === info.path)
+        if (session) {
+          session.has_refusal = info.has_refusal
+          session.refusal_count = info.refusal_count
+          session.cached = false
+          logStore.addLog(`实时扫描: ${session.id} 发现 ${info.refusal_count} 条拒绝`, 'warn')
+        }
       }
     } catch (e) {
       console.error('WebSocket message parse error:', e)

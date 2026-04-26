@@ -40,6 +40,7 @@ from codex_session_patcher.core import (
 )
 from codex_session_patcher.core.patcher import clean_session_jsonl, save_session_jsonl, delete_session_lines
 from codex_session_patcher.core.scan_cache import ScanCache
+from .file_watcher import SessionWatcher
 from codex_session_patcher.core.sqlite_adapter import OpenCodeDBAdapter, DEFAULT_OPENCODE_DB
 
 logger = logging.getLogger(__name__)
@@ -78,6 +79,7 @@ manager = ConnectionManager()
 
 _detector = RefusalDetector()
 _scan_cache = ScanCache()
+_session_watcher = SessionWatcher()
 
 
 # ─── 会话缓存 ────────────────────────────────────────────────────────────────
@@ -1908,3 +1910,83 @@ async def rewrite_prompt(request: PromptRewriteRequest):
             original=request.original_request,
             error=str(e),
         )
+
+
+# ─── 实时监控 ──────────────────────────────────────────────────────────────
+
+async def _on_session_file_changed(path: str):
+    """Called by file watcher when a session file changes. Incremental scan + push."""
+    try:
+        fmt = detect_session_format(path)
+        has_refusal, count, refusal_lines, total, was_incr, start_line = \
+            check_session_refusal_incremental(path, fmt)
+
+        if was_incr and refusal_lines:
+            # Only broadcast if new refusals found in incremental range
+            new_refusals = [n for n in refusal_lines if n > start_line]
+            if new_refusals:
+                await manager.broadcast(WSMessage(
+                    type="session_update",
+                    data={
+                        "path": path,
+                        "has_refusal": has_refusal,
+                        "refusal_count": count,
+                        "new_refusal_lines": new_refusals,
+                    }
+                ))
+                logger.info("Real-time scan: %s - %d new refusals", path, len(new_refusals))
+        elif not was_incr and has_refusal:
+            await manager.broadcast(WSMessage(
+                type="session_update",
+                data={
+                    "path": path,
+                    "has_refusal": has_refusal,
+                    "refusal_count": count,
+                }
+            ))
+    except Exception:
+        logger.debug("Real-time scan failed for %s", path, exc_info=True)
+
+
+def start_file_watcher():
+    """Start the file watcher if enabled in settings."""
+    settings = load_settings()
+    if not getattr(settings, 'realtime_monitor', False):
+        logger.info("Real-time monitor disabled in settings")
+        return
+    try:
+        loop = asyncio.get_event_loop()
+        _session_watcher.start(_on_session_file_changed, loop)
+    except Exception:
+        logger.warning("Failed to start file watcher", exc_info=True)
+
+
+def stop_file_watcher():
+    """Stop the file watcher."""
+    _session_watcher.stop()
+
+
+@router.post("/monitor/start")
+async def start_monitor():
+    """Start real-time session monitoring."""
+    if _session_watcher.is_running:
+        return {"status": "already_running"}
+    try:
+        loop = asyncio.get_event_loop()
+        _session_watcher.start(_on_session_file_changed, loop)
+        return {"status": "started"}
+    except Exception as e:
+        return {"status": "error", "message": str(e)}
+
+
+@router.post("/monitor/stop")
+async def stop_monitor():
+    """Stop real-time session monitoring."""
+    _session_watcher.stop()
+    return {"status": "stopped"}
+
+
+@router.get("/monitor/status")
+async def monitor_status():
+    """Get real-time monitor status."""
+    return {"running": _session_watcher.is_running}

@@ -195,6 +195,19 @@ export async function updateSettings(settings) {
   })
 }
 
+// 实时监控
+export async function startMonitor() {
+  return request('/monitor/start', { method: 'POST' })
+}
+
+export async function stopMonitor() {
+  return request('/monitor/stop', { method: 'POST' })
+}
+
+export async function getMonitorStatus() {
+  return request('/monitor/status')
+}
+
 // 导出 api 对象（用于 CTF Store 等）
 export const api = {
   get: (path) => request(path),

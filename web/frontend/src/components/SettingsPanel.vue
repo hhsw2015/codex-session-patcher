@@ -150,6 +150,15 @@
               <span class="form-hint">{{ $t('settings.incrementalScanDesc') || '启用后增量扫描只扫描新增内容，加快扫描速度' }}</span>
             </template>
           </n-form-item>
+          <n-form-item :label="$t('settings.realtimeMonitor') || '实时监控'">
+            <n-switch
+              v-model:value="settingsStore.realtimeMonitor"
+              @update:value="settingsStore.markChanged"
+            />
+            <template #feedback>
+              <span class="form-hint">{{ $t('settings.realtimeMonitorDesc') || '监听 session 文件变化，自动增量扫描并推送结果到界面' }}</span>
+            </template>
+          </n-form-item>
           <n-form-item :label="$t('settings.maxBackups') || '每个 Session 最大备份数'">
             <n-input-number
               v-model:value="settingsStore.maxBackupsPerSession"
