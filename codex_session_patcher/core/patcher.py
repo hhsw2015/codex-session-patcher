@@ -246,32 +246,40 @@ def find_group_lines(
     if anchor_idx < 0 or anchor_idx >= len(lines):
         return [anchor_line_num]
 
-    # Find group start: scan backward to find user message
+    def is_user_question(line, fmt):
+        """Distinguish real user questions from tool_result human messages."""
+        line_type = line.get('type', '')
+        if fmt == SessionFormat.CODEX:
+            return line_type == 'user_message'
+        if line_type == 'user':
+            return True
+        if line_type == 'human':
+            content = line.get('message', {}).get('content', [])
+            if isinstance(content, list):
+                return not any(
+                    isinstance(b, dict) and b.get('type') == 'tool_result'
+                    for b in content
+                )
+            return True
+        return False
+
+    # Find group start: scan backward to find user question
     group_start = anchor_idx
     for i in range(anchor_idx - 1, -1, -1):
-        line = lines[i]
-        line_type = line.get('type', '')
-        if session_format == SessionFormat.CODEX:
-            if line_type == 'user_message':
-                group_start = i
-                break
-        else:
-            if line_type in ('human', 'user'):
-                group_start = i
-                break
+        if is_user_question(lines[i], session_format):
+            group_start = i
+            break
 
-    # Find group end: scan forward from group_start until next user
+    # Find group end: scan forward until next user question
     group_end = len(lines) - 1
-    user_types = {'user_message'} if session_format == SessionFormat.CODEX else {'human', 'user'}
     for i in range(group_start + 1, len(lines)):
-        if lines[i].get('type', '') in user_types:
+        if is_user_question(lines[i], session_format):
             group_end = i - 1
             break
 
     result = []
     for i in range(group_start, group_end + 1):
-        is_user = lines[i].get('type', '') in user_types
-        if is_user and not include_user:
+        if is_user_question(lines[i], session_format) and not include_user:
             continue
         result.append(i + 1)
     return result
