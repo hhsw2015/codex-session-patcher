@@ -439,17 +439,44 @@ function filterByGroup(list, predicate) {
   return list.filter((_, i) => matched.has(i))
 }
 
+// Condense: per group keep user + last assistant only
+function condenseGroups(list) {
+  const groups = []
+  let current = null
+  list.forEach((t, i) => {
+    if (t.role === 'user') {
+      current = { userIdx: i, assistantIndices: [] }
+      groups.push(current)
+    } else if (current) {
+      current.assistantIndices.push(i)
+    } else {
+      groups.push({ userIdx: null, assistantIndices: [i] })
+    }
+  })
+  const keep = new Set()
+  for (const g of groups) {
+    if (g.userIdx !== null) keep.add(g.userIdx)
+    if (g.assistantIndices.length > 0) {
+      keep.add(g.assistantIndices[g.assistantIndices.length - 1])
+    }
+  }
+  return list.filter((_, i) => keep.has(i))
+}
+
 const filteredConversation = computed(() => {
   let list = preview.value?.conversation_summary || []
+
+  // First: condense all views to user + last assistant per group
+  list = condenseGroups(list)
+
   if (conversationView.value === 'incremental' && sessionStore.incrementalFromLine > 0) {
     list = list.filter(t => t.line_num > sessionStore.incrementalFromLine)
   } else if (conversationView.value === 'refusal') {
-    // Only show: preceding user question + refusal assistant messages (skip non-refusal assistants in group)
+    // Only show: user question + refusal assistant
     const matched = new Set()
     list.forEach((t, i) => {
       if (t.has_refusal) {
         matched.add(i)
-        // Include preceding user question
         for (let j = i - 1; j >= 0; j--) {
           if (list[j].role === 'user') { matched.add(j); break }
         }
