@@ -217,6 +217,13 @@ export default {
     showAllSessionsHint: 'When disabled, only show sessions with refusal or cleaned',
     cleanReasoning: 'Clean Reasoning Content',
     cleanReasoningHint: 'Delete thinking/reasoning blocks when cleaning sessions. Disable to only replace refusal responses.',
+    scanBackup: 'Scan & Backup',
+    incrementalScan: 'Incremental Scan',
+    incrementalScanDesc: 'Only scan new content when using incremental scan, faster',
+    maxBackups: 'Max Backups per Session',
+    maxBackupsDesc: '0 means unlimited. Oldest backups auto-deleted when exceeded',
+    realtimeMonitor: 'Real-time Monitor',
+    realtimeMonitorDesc: 'Watch session files for changes, auto-scan and push results to UI',
     resetSuccess: 'Reset to defaults',
   },
 

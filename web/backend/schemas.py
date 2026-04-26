@@ -102,7 +102,7 @@ class Settings(BaseModel):
     clean_reasoning: bool = True  # 是否清理推理内容（thinking/reasoning blocks）
     incremental_scan: bool = True  # 是否启用增量扫描
     max_backups_per_session: int = 3  # 每个 session 最多保留的备份数量，0 = 不限制
-    realtime_monitor: bool = False  # 是否启用实时监控（监听 session 文件变化）
+    realtime_monitor: bool = True  # 是否启用实时监控（监听 session 文件变化，需 watchdog）
 
 
 class LogEntry(BaseModel):

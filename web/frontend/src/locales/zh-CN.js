@@ -217,6 +217,13 @@ export default {
     showAllSessionsHint: '关闭时仅显示有拒绝和已清理的会话，减少列表干扰',
     cleanReasoning: '清理推理内容',
     cleanReasoningHint: '清理会话时同时删除 thinking/reasoning 推理内容，关闭则只替换拒绝回复',
+    scanBackup: '扫描与备份',
+    incrementalScan: '增量扫描',
+    incrementalScanDesc: '启用后增量扫描只扫描新增内容，加快扫描速度',
+    maxBackups: '每个 Session 最大备份数',
+    maxBackupsDesc: '0 表示不限制。超出数量时自动删除最旧的备份',
+    realtimeMonitor: '实时监控',
+    realtimeMonitorDesc: '监听 session 文件变化，自动增量扫描并推送结果到界面',
     resetSuccess: '已重置为默认值',
   },
 
