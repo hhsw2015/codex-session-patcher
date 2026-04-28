@@ -1,6 +1,6 @@
 [project]
 name = "codex-session-patcher"
-version = "1.4.1"
+version = "1.4.2"
 description = "AI coding session cleaner with CTF/pentest prompt injection — supports Codex, Claude Code, OpenCode"
 readme = "README.md"
 requires-python = ">=3.8"
