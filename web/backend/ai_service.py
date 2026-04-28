@@ -169,6 +169,14 @@ async def call_llm(settings: Settings, messages: list[dict]) -> str:
     data = await request_openai_chat_completion(
         settings.ai_endpoint, settings.ai_key, body
     )
+    if "error" in data:
+        err = data["error"]
+        msg = err.get("message", "") if isinstance(err, dict) else str(err)
+        inner = err.get("innererror", {}) if isinstance(err, dict) else {}
+        cfr = inner.get("content_filter_result", {})
+        if cfr.get("jailbreak", {}).get("filtered"):
+            raise RuntimeError("Azure 内容过滤器拦截 (jailbreak)，请尝试手动改写或更换 AI 模型")
+        raise RuntimeError(f"AI API 错误: {msg[:200]}")
     choices = data.get("choices", [])
     if not choices:
         raise RuntimeError("AI 返回了空结果")
@@ -274,6 +282,16 @@ async def generate_ai_rewrite(
     return AIRewriteResponse(success=True, items=items)
 
 
+SINGLE_REWRITE_SYSTEM = """You are a helpful coding assistant. The user will show you a conversation snippet where the assistant's response was unhelpful or off-topic. Your job is to write a better assistant response that directly addresses the user's question.
+
+Rules:
+1. Write a response that acknowledges the request and outlines how to proceed
+2. Do NOT fabricate specific code, findings, or technical details you don't have
+3. Match the language (Chinese context -> Chinese, English -> English)
+4. Keep it concise: 1-3 sentences
+5. Output ONLY the replacement response text, nothing else"""
+
+
 async def generate_single_rewrite(
     settings: Settings,
     original_content: str,
@@ -282,8 +300,15 @@ async def generate_single_rewrite(
     """对单条消息生成 AI 改写，不加载 session 文件。"""
     if not original_content or not original_content.strip():
         raise ValueError("原始内容为空，无法改写")
-    context_messages = []
+
+    context_part = ""
     if context_before:
-        context_messages.append({"role": "user", "content": context_before})
-    messages = build_rewrite_prompt(context_messages, original_content)
+        context_part = f"User's question:\n{context_before}\n\n"
+
+    user_message = f"""{context_part}The assistant replied with:\n---\n{original_content[:500]}\n---\n\nThis response did not address the user's request. Please write a better response."""
+
+    messages = [
+        {"role": "system", "content": SINGLE_REWRITE_SYSTEM},
+        {"role": "user", "content": user_message},
+    ]
     return await call_llm(settings, messages)

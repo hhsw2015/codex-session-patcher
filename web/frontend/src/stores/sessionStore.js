@@ -157,11 +157,8 @@ export const useSessionStore = defineStore('session', () => {
           })
         }
         aiRewrite.value = null
-        await fetchSessions()
-        const currentSession = sessions.value.find(s => s.id === selectedId.value)
-        if (currentSession) {
-          await previewSession(selectedId.value)
-        }
+        await previewSession(sid)
+        fetchSessions().catch(() => {})
       }
       return data
     } catch (error) {
@@ -210,13 +207,12 @@ export const useSessionStore = defineStore('session', () => {
   }
 
   async function restoreSession(id, backupFilename) {
-    const data = await api.restoreSession(id || selectedId.value, backupFilename)
+    const sid = id || selectedId.value
+    const data = await api.restoreSession(sid, backupFilename)
     if (data.success) {
       api.clearCache('sessions')
-      await fetchSessions()
-      if (selectedId.value) {
-        await previewSession(selectedId.value)
-      }
+      await previewSession(sid)
+      fetchSessions().catch(() => {})
     }
     return data
   }
@@ -234,10 +230,8 @@ export const useSessionStore = defineStore('session', () => {
             description: `删除 ${data.deleted_lines.length} 行 (L${lineNums.join(',L')})`,
           })
         }
-        await fetchSessions()
-        if (selectedId.value) {
-          await previewSession(selectedId.value)
-        }
+        await previewSession(sid)
+        fetchSessions().catch(() => {})
       }
       return data
     } catch (error) {
@@ -276,10 +270,8 @@ export const useSessionStore = defineStore('session', () => {
             description: `清理 thinking blocks (${data.changes?.length || 0} 处)`,
           })
         }
-        await fetchSessions()
-        if (selectedId.value) {
-          await previewSession(selectedId.value)
-        }
+        await previewSession(sid)
+        fetchSessions().catch(() => {})
       }
       return data
     } catch (error) {
@@ -295,10 +287,8 @@ export const useSessionStore = defineStore('session', () => {
       const backupFilename = last.backupPath.split('/').pop()
       const data = await api.restoreSession(last.sessionId, backupFilename)
       if (data.success) {
-        await fetchSessions()
-        if (selectedId.value) {
-          await previewSession(selectedId.value)
-        }
+        await previewSession(last.sessionId)
+        fetchSessions().catch(() => {})
       } else if (data.message && data.message.includes('不存在')) {
         // Backup was cleaned up by max_backups limit, discard stale undo entries
         console.warn('Undo backup missing, clearing stale entries')

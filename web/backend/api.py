@@ -39,7 +39,7 @@ from codex_session_patcher.core import (
     get_reasoning_items,
     MOCK_RESPONSE,
 )
-from codex_session_patcher.core.patcher import clean_session_jsonl, save_session_jsonl, delete_session_lines, find_group_lines
+from codex_session_patcher.core.patcher import clean_session_jsonl, save_session_jsonl, delete_session_lines, find_group_lines, ChangeDetail as CoreChangeDetail
 from codex_session_patcher.core.scan_cache import ScanCache
 try:
     from .file_watcher import SessionWatcher
@@ -663,22 +663,41 @@ def patch_session(file_path: str, mock_response: str = MOCK_RESPONSE,
 
             lines = adapter.load_session_messages(session_id)
 
-            cleaned_lines, modified, core_changes = clean_session_jsonl(
-                lines, detector, show_content=True,
-                mock_response=mock_response,
-                session_format=session_format,
-                selected_lines=selected_lines,
-                clean_reasoning=clean_reasoning,
-            )
-
-            if replacements:
+            if replacements and not selected_lines:
                 strategy = get_format_strategy(session_format)
-                for idx, line in enumerate(cleaned_lines):
+                core_changes = []
+                modified = False
+                for idx, line in enumerate(lines):
                     line_num = idx + 1
                     if line_num in replacements:
+                        original = strategy.extract_text_content(line)
                         updated = strategy.update_text_content(line, replacements[line_num])
-                        updated, _ = strategy.remove_thinking_from_message(updated)
-                        cleaned_lines[idx] = updated
+                        lines[idx] = updated
+                        modified = True
+                        core_changes.append(CoreChangeDetail(
+                            line_num=line_num,
+                            change_type='replace',
+                            original_content=(original or '')[:500],
+                            new_content=replacements[line_num][:500],
+                        ))
+                cleaned_lines = lines
+            else:
+                cleaned_lines, modified, core_changes = clean_session_jsonl(
+                    lines, detector, show_content=True,
+                    mock_response=mock_response,
+                    session_format=session_format,
+                    selected_lines=selected_lines,
+                    clean_reasoning=clean_reasoning,
+                )
+
+                if replacements:
+                    strategy = get_format_strategy(session_format)
+                    for idx, line in enumerate(cleaned_lines):
+                        line_num = idx + 1
+                        if line_num in replacements:
+                            updated = strategy.update_text_content(line, replacements[line_num])
+                            updated, _ = strategy.remove_thinking_from_message(updated)
+                            cleaned_lines[idx] = updated
 
             # 写回 SQLite
             adapter.save_session_messages(session_id, cleaned_lines)
@@ -694,23 +713,42 @@ def patch_session(file_path: str, mock_response: str = MOCK_RESPONSE,
             parser = SessionParser(session_format=session_format)
             lines = parser.parse_session_jsonl(file_path)
 
-            cleaned_lines, modified, core_changes = clean_session_jsonl(
-                lines, detector, show_content=True,
-                mock_response=mock_response,
-                session_format=session_format,
-                selected_lines=selected_lines,
-                clean_reasoning=clean_reasoning,
-            )
-
-            if replacements:
+            if replacements and not selected_lines:
+                # Single-message rewrite: only touch specified lines, leave everything else intact
                 strategy = get_format_strategy(session_format)
-                for idx, line in enumerate(cleaned_lines):
+                core_changes = []
+                modified = False
+                for idx, line in enumerate(lines):
                     line_num = line.get('_line_num', idx + 1)
                     if line_num in replacements:
+                        original = strategy.extract_text_content(line)
                         updated = strategy.update_text_content(line, replacements[line_num])
-                        # Strip thinking from rewritten message -- old thinking doesn't match new content
-                        updated, _ = strategy.remove_thinking_from_message(updated)
-                        cleaned_lines[idx] = updated
+                        lines[idx] = updated
+                        modified = True
+                        core_changes.append(CoreChangeDetail(
+                            line_num=line_num,
+                            change_type='replace',
+                            original_content=(original or '')[:500],
+                            new_content=replacements[line_num][:500],
+                        ))
+                cleaned_lines = lines
+            else:
+                cleaned_lines, modified, core_changes = clean_session_jsonl(
+                    lines, detector, show_content=True,
+                    mock_response=mock_response,
+                    session_format=session_format,
+                    selected_lines=selected_lines,
+                    clean_reasoning=clean_reasoning,
+                )
+
+                if replacements:
+                    strategy = get_format_strategy(session_format)
+                    for idx, line in enumerate(cleaned_lines):
+                        line_num = line.get('_line_num', idx + 1)
+                        if line_num in replacements:
+                            updated = strategy.update_text_content(line, replacements[line_num])
+                            updated, _ = strategy.remove_thinking_from_message(updated)
+                            cleaned_lines[idx] = updated
 
             save_session_jsonl(cleaned_lines, file_path)
 
@@ -1297,7 +1335,7 @@ async def delete_messages_api(session_id: str, body: DeleteMessagesRequest):
         backup_path = None
 
     parser = SessionParser(os.path.dirname(session.path), session_format=core_fmt)
-    lines = parser.parse_session(session.path)
+    lines = parser.parse_session_jsonl(session.path)
 
     remaining, deleted = delete_session_lines(
         lines, body.line_nums, session_format=core_fmt, delete_paired=body.delete_paired
@@ -1343,7 +1381,7 @@ async def group_action_api(session_id: str, body: GroupActionRequest):
         lines = adapter.load_session_messages(session_id)
     else:
         parser = SessionParser(os.path.dirname(session.path), session_format=core_fmt)
-        lines = parser.parse_session(session.path)
+        lines = parser.parse_session_jsonl(session.path)
 
     include_user = (body.action == "revoke")
     group_lines = find_group_lines(lines, body.anchor_line_num, core_fmt, include_user=include_user)
@@ -1378,7 +1416,6 @@ async def group_action_api(session_id: str, body: GroupActionRequest):
         # Step 1: rewrite last assistant (no line shift)
         strategy = get_format_strategy(core_fmt)
         updated = strategy.update_text_content(lines[last_assistant - 1], body.replacement_text)
-        updated, _ = strategy.remove_thinking_from_message(updated)
         lines[last_assistant - 1] = updated
 
         # Step 2: delete others
@@ -1489,7 +1526,7 @@ async def clean_thinking_api(session_id: str):
 
     # JSONL path
     parser = SessionParser(os.path.dirname(session.path), session_format=core_fmt)
-    lines = parser.parse_session(session.path)
+    lines = parser.parse_session_jsonl(session.path)
 
     changes = []
 

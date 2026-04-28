@@ -345,7 +345,7 @@
               v-for="(turn, idx) in filteredConversation"
               :key="idx"
               class="summary-turn"
-              :class="[turn.role, { 'has-refusal': turn.has_refusal }]"
+              :class="[turn.role, { 'has-refusal': turn.has_refusal, 'is-pending': pendingLines.has(turn.line_num) }]"
             >
               <div class="turn-header">
                 <n-tag
@@ -375,6 +375,23 @@
         </div>
       </div>
     </div>
+
+    <!-- AI 改写确认弹窗 -->
+    <n-modal v-model:show="rewriteModal.show" preset="card" title="AI 改写结果" style="width: 600px; max-width: 90vw;">
+      <div style="margin-bottom: 8px; color: #666; font-size: 13px;">可编辑后确认</div>
+      <n-input
+        v-model:value="rewriteModal.text"
+        type="textarea"
+        :autosize="{ minRows: 4, maxRows: 16 }"
+        placeholder=""
+      />
+      <template #footer>
+        <div style="display: flex; justify-content: flex-end; gap: 8px;">
+          <n-button @click="rewriteModal.show = false">取消</n-button>
+          <n-button type="primary" @click="confirmRewrite">确认改写</n-button>
+        </div>
+      </template>
+    </n-modal>
   </div>
 </template>
 
@@ -409,6 +426,9 @@ const reversedChanges = computed(() => {
   return [...preview.value.changes].reverse()
 })
 const conversationView = ref('refusal') // 'refusal' | 'all' | 'incremental'
+
+const rewriteModal = ref({ show: false, text: '', lineNum: null, sessionId: null })
+const pendingLines = ref(new Set())
 const conversationSearch = ref('')
 const debouncedSearch = ref('')
 let _searchTimer = null
@@ -441,28 +461,9 @@ function filterByGroup(list, predicate) {
   return list.filter((_, i) => matched.has(i))
 }
 
-// Condense: per group keep user + last assistant only
+// Condense: per group keep user + all assistant messages
 function condenseGroups(list) {
-  const groups = []
-  let current = null
-  list.forEach((t, i) => {
-    if (t.role === 'user') {
-      current = { userIdx: i, assistantIndices: [] }
-      groups.push(current)
-    } else if (current) {
-      current.assistantIndices.push(i)
-    } else {
-      groups.push({ userIdx: null, assistantIndices: [i] })
-    }
-  })
-  const keep = new Set()
-  for (const g of groups) {
-    if (g.userIdx !== null) keep.add(g.userIdx)
-    if (g.assistantIndices.length > 0) {
-      keep.add(g.assistantIndices[g.assistantIndices.length - 1])
-    }
-  }
-  return list.filter((_, i) => keep.has(i))
+  return list
 }
 
 const filteredConversation = computed(() => {
@@ -629,14 +630,21 @@ async function handleMessageAction(action, turn) {
   } else if (action === 'delete') {
     // Delete: only delete this one assistant reply (+ its tool_result pair via backend)
     if (!confirm(`确定删除这条回复？(L${turn.line_num})`)) return
-    await sessionStore.deleteMessages(sessionId, [turn.line_num], true)
+    pendingLines.value.add(turn.line_num)
+    try {
+      await sessionStore.deleteMessages(sessionId, [turn.line_num], true)
+    } finally {
+      pendingLines.value.delete(turn.line_num)
+    }
 
   } else if (action === 'rewrite') {
     // Rewrite: only rewrite this one assistant reply
-    const newText = prompt('输入替换内容:', turn.content)
-    if (newText === null || newText === turn.content) return
-    const replacements = [{ line_num: turn.line_num, replacement_text: newText }]
-    await sessionStore.patchSession(sessionId, [turn.line_num], null, replacements)
+    rewriteModal.value = {
+      show: true,
+      text: turn.content || '',
+      lineNum: turn.line_num,
+      sessionId,
+    }
 
   } else if (action === 'ai-rewrite') {
     // AI rewrite: this one assistant reply, with user question as context
@@ -651,13 +659,28 @@ async function handleMessageAction(action, turn) {
         alert('AI 改写失败: ' + (result.error || '未知错误'))
         return
       }
-      const confirmed = prompt('AI 改写结果（可编辑后确认）:', result.replacement)
-      if (confirmed === null) return
-      const replacements = [{ line_num: turn.line_num, replacement_text: confirmed }]
-      await sessionStore.patchSession(sessionId, [turn.line_num], null, replacements)
+      rewriteModal.value = {
+        show: true,
+        text: result.replacement || '',
+        lineNum: turn.line_num,
+        sessionId,
+      }
     } catch (e) {
       alert('AI 改写失败: ' + e.message)
     }
+  }
+}
+
+async function confirmRewrite() {
+  const { text, lineNum, sessionId } = rewriteModal.value
+  rewriteModal.value.show = false
+  if (!text || !lineNum) return
+  pendingLines.value.add(lineNum)
+  try {
+    const replacements = [{ line_num: lineNum, replacement_text: text }]
+    await sessionStore.patchSession(sessionId, null, null, replacements)
+  } finally {
+    pendingLines.value.delete(lineNum)
   }
 }
 
@@ -1123,6 +1146,24 @@ watch(() => sessionStore.selectedId, () => {
 }
 .summary-turn.assistant.has-refusal {
   border-left: 3px solid var(--error-color, #e06060);
+}
+
+.summary-turn.is-pending {
+  opacity: 0.45;
+  pointer-events: none;
+  position: relative;
+}
+.summary-turn.is-pending::after {
+  content: '处理中...';
+  position: absolute;
+  top: 50%;
+  left: 50%;
+  transform: translate(-50%, -50%);
+  font-size: 12px;
+  color: var(--primary-color, #4090d0);
+  background: rgba(255,255,255,0.8);
+  padding: 2px 10px;
+  border-radius: 4px;
 }
 
 .turn-header {
