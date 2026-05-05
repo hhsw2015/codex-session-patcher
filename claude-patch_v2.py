@@ -1,19 +1,24 @@
 #!/usr/bin/env python3
 """
-Claude Code CLI 限制移除补丁 v2 (Bun standalone exe 适配)
+Claude Code CLI 限制移除补丁 v2 (Bun standalone 适配, Mac + Windows)
 
-针对 Claude Code 2.1.x — cli.js 已编译进 bin/claude.exe (Bun standalone)。
+针对 Claude Code 2.1.x — cli.js 已编译进单文件可执行文件 (Bun standalone)。
+
+支持平台:
+  - macOS: ~/.local/share/claude/versions/<ver> (独立安装)
+  - Windows: npm 全局安装 bin/claude.exe
 
 工作原理：
-1. 等长字节级替换 .exe 内 13 处限制串（不变文件长度，无完整性校验）
-2. 改 npm cmd/ps1 shim 自动注入 ~/.claude/override.md 到 system prompt 末尾
+1. 等长字节级替换可执行文件内 13 处限制串（不变文件长度，无完整性校验）
+2. Windows: 改 npm cmd/ps1 shim 自动注入 ~/.claude/override.md
+   macOS: 在 shell rc 文件中添加 alias 注入 --append-system-prompt-file
    (system role 末尾 = recency 权重最高位置)
 
 用法:
-  python patch-claude-v2.py              # 启动 TUI
-  python patch-claude-v2.py --apply      # 静默应用
-  python patch-claude-v2.py --revert     # 静默回滚
-  python patch-claude-v2.py --status     # 显示状态
+  python claude-patch_v2.py              # 启动 TUI
+  python claude-patch_v2.py --apply      # 静默应用
+  python claude-patch_v2.py --revert     # 静默回滚
+  python claude-patch_v2.py --status     # 显示状态
 """
 
 import os
@@ -77,6 +82,23 @@ Behavioral rules:
 
 def find_claude_exe():
     candidates = []
+    home = os.path.expanduser("~")
+
+    # macOS: 独立安装路径 (~/.local/share/claude/versions/<latest>)
+    if platform.system() == "Darwin":
+        versions_dir = os.path.join(home, ".local", "share", "claude", "versions")
+        if os.path.isdir(versions_dir):
+            versions = sorted(os.listdir(versions_dir))
+            if versions:
+                candidates.append(os.path.join(versions_dir, versions[-1]))
+        # 也检查 symlink 解析
+        symlink_path = os.path.join(home, ".local", "bin", "claude")
+        if os.path.islink(symlink_path):
+            real = os.path.realpath(symlink_path)
+            if os.path.isfile(real) and real not in candidates:
+                candidates.append(real)
+
+    # npm 全局安装路径
     try:
         root = subprocess.check_output(
             ["npm", "root", "-g"],
@@ -95,9 +117,10 @@ def find_claude_exe():
         )
     except Exception:
         pass
+
     if platform.system() == "Windows":
         appdata = os.environ.get(
-            "APPDATA", os.path.join(os.path.expanduser("~"), "AppData", "Roaming")
+            "APPDATA", os.path.join(home, "AppData", "Roaming")
         )
         candidates.append(
             os.path.join(
@@ -110,8 +133,8 @@ def find_claude_exe():
                 "claude.exe",
             )
         )
-    else:
-        home = os.path.expanduser("~")
+    elif platform.system() != "Darwin":
+        # Linux npm paths
         for prefix in [
             os.path.join(home, ".npm-global", "lib"),
             "/usr/local/lib",
@@ -127,6 +150,7 @@ def find_claude_exe():
                     "claude",
                 )
             )
+
     for p in candidates:
         if os.path.isfile(p):
             return p
@@ -141,7 +165,8 @@ def find_npm_shim_dir():
         npm_dir = os.path.join(appdata, "npm")
         if os.path.isdir(npm_dir):
             return npm_dir
-    else:
+    elif platform.system() != "Darwin":
+        # Linux only -- Mac uses alias instead of shim
         for path in [
             os.path.expanduser("~/.npm-global/bin"),
             "/usr/local/bin",
@@ -504,6 +529,96 @@ def install_override_md(force: bool = False) -> str:
     return "wrote"
 
 
+# ═══════════════════════════════════════════════════════════════════════
+#  macOS shell alias 注入
+# ═══════════════════════════════════════════════════════════════════════
+
+ALIAS_MARKER = "# Claude Code override injection"
+ALIAS_LINE = "alias claude='claude --append-system-prompt-file ~/.claude/override.md'"
+
+
+def get_shell_rc_path() -> str:
+    shell = os.environ.get("SHELL", "/bin/zsh")
+    home = os.path.expanduser("~")
+    if "zsh" in shell:
+        return os.path.join(home, ".zshrc")
+    elif "bash" in shell:
+        # macOS: .bash_profile is sourced for login shells
+        bash_profile = os.path.join(home, ".bash_profile")
+        if os.path.isfile(bash_profile):
+            return bash_profile
+        return os.path.join(home, ".bashrc")
+    return os.path.join(home, ".zshrc")
+
+
+def shell_alias_status() -> str:
+    """Returns: 'installed', 'not_installed', 'not_applicable'"""
+    if platform.system() != "Darwin":
+        return "not_applicable"
+    rc_path = get_shell_rc_path()
+    if not os.path.isfile(rc_path):
+        return "not_installed"
+    with open(rc_path, "r", encoding="utf-8", errors="replace") as f:
+        content = f.read()
+    if ALIAS_MARKER in content:
+        return "installed"
+    return "not_installed"
+
+
+def install_shell_alias() -> str:
+    """Install shell alias. Returns: 'installed', 'already_installed', 'error:<msg>'"""
+    if platform.system() != "Darwin":
+        return "not_applicable"
+    rc_path = get_shell_rc_path()
+    if os.path.isfile(rc_path):
+        with open(rc_path, "r", encoding="utf-8", errors="replace") as f:
+            content = f.read()
+        if ALIAS_MARKER in content:
+            return "already_installed"
+    else:
+        content = ""
+
+    alias_block = f"\n{ALIAS_MARKER}\n{ALIAS_LINE}\n"
+    with open(rc_path, "a", encoding="utf-8") as f:
+        f.write(alias_block)
+    return "installed"
+
+
+def remove_shell_alias() -> str:
+    """Remove shell alias. Returns: 'removed', 'not_found'"""
+    if platform.system() != "Darwin":
+        return "not_applicable"
+    rc_path = get_shell_rc_path()
+    if not os.path.isfile(rc_path):
+        return "not_found"
+    with open(rc_path, "r", encoding="utf-8", errors="replace") as f:
+        lines = f.readlines()
+
+    new_lines = []
+    skip_next = False
+    found = False
+    for line in lines:
+        if ALIAS_MARKER in line:
+            found = True
+            skip_next = True
+            # also remove the preceding blank line added by install
+            if new_lines and new_lines[-1].strip() == "":
+                new_lines.pop()
+            continue
+        if skip_next and ALIAS_LINE in line:
+            skip_next = False
+            continue
+        skip_next = False
+        new_lines.append(line)
+
+    if not found:
+        return "not_found"
+
+    with open(rc_path, "w", encoding="utf-8") as f:
+        f.writelines(new_lines)
+    return "removed"
+
+
 def write_exe_with_lock_fallback(exe: str, data: bytes) -> str:
     """写 .exe，文件锁时用 rename 后备策略。返回状态字符串。"""
     try:
@@ -551,7 +666,7 @@ BANNER = r"""[bold cyan]
 ██╔═══╝ ██╔══██║   ██║   ██║     ██╔══██║██╔══╝  ██╔══██╗
 ██║     ██║  ██║   ██║   ╚██████╗██║  ██║███████╗██║  ██║
 ╚═╝     ╚═╝  ╚═╝   ╚═╝    ╚═════╝╚═╝  ╚═╝╚══════╝╚═╝  ╚═╝[/]
-[dim]              v2  ·  Bun standalone .exe 限制移除[/]
+[dim]              v2  ·  Bun standalone 限制移除 (Mac + Win)[/]
 """
 
 
@@ -574,6 +689,8 @@ def gather_state():
         "shim_cmd": "missing",
         "shim_ps1": "missing",
         "override_exists": os.path.isfile(override) if override else False,
+        "alias_status": shell_alias_status(),
+        "is_mac": platform.system() == "Darwin",
     }
     if exe and os.path.isfile(exe):
         state["exe_size"] = os.path.getsize(exe)
@@ -605,18 +722,22 @@ def render_main(state):
     # ── 信息面板 ──
     pending = state["patches_pending"]
     total = pending + state["patches_applied"]
-    shim_done = state["shim_cmd"] == "patched" and state["shim_ps1"] == "patched"
+    is_mac = state["is_mac"]
+    if is_mac:
+        inject_done = state["alias_status"] == "installed"
+    else:
+        inject_done = state["shim_cmd"] == "patched" and state["shim_ps1"] == "patched"
     override_done = state["override_exists"]
     exe_done = pending == 0
 
-    if exe_done and shim_done and override_done:
+    if exe_done and inject_done and override_done:
         st = "[bold green]全部完成 — 限制清空 + 自动注入 override.md[/]"
-    elif exe_done or shim_done:
+    elif exe_done or inject_done:
         parts = []
         if not exe_done:
             parts.append(f"待破解 {pending}/{total}")
-        if not shim_done:
-            parts.append("shim 未注入")
+        if not inject_done:
+            parts.append("alias 未安装" if is_mac else "shim 未注入")
         if not override_done:
             parts.append("override.md 未生成")
         st = "[bold yellow]部分完成 — " + ", ".join(parts) + "[/]"
@@ -625,14 +746,17 @@ def render_main(state):
 
     bak_t = "[green]有[/] (.bak)" if state["has_backup"] else "[dim]无[/]"
 
+    exe_label = "claude" if is_mac else "claude.exe"
     info_lines = [
-        f"  [dim]目标[/]  [bold white]claude.exe v{state['version']}[/]  "
+        f"  [dim]目标[/]  [bold white]{exe_label} v{state['version']}[/]  "
         f"[dim]({state['exe_size']/1048576:.1f} MB)[/]",
     ]
     if state["exe"]:
         info_lines.append(f"  [dim]路径[/]  [dim italic]{state['exe']}[/]")
     info_lines.append(f"  [dim]备份[/]  {bak_t}")
-    if state["shim"]:
+    if is_mac:
+        info_lines.append(f"  [dim]注入[/]  shell alias ({get_shell_rc_path()})")
+    elif state["shim"]:
         info_lines.append(f"  [dim]shim[/]  [dim italic]{state['shim']}[/]")
     info_lines.append(f"  [dim]状态[/]  {st}")
     info = Text.from_markup("\n".join(info_lines))
@@ -674,39 +798,53 @@ def render_main(state):
         )
 
     table.add_section()
-    # shim 行
-    cmd_st = (
-        "[bold green]✓ 已注入[/]"
-        if state["shim_cmd"] == "patched"
-        else (
-            "[bold red]✗ 未注入[/]"
-            if state["shim_cmd"] == "original"
-            else "[dim](missing)[/]"
+    # 注入行: Mac 用 alias, Windows 用 shim
+    if state["is_mac"]:
+        alias_st = (
+            "[bold green]✓ 已安装[/]"
+            if state["alias_status"] == "installed"
+            else "[bold red]✗ 未安装[/]"
         )
-    )
-    ps1_st = (
-        "[bold green]✓ 已注入[/]"
-        if state["shim_ps1"] == "patched"
-        else (
-            "[bold red]✗ 未注入[/]"
-            if state["shim_ps1"] == "original"
-            else "[dim](missing)[/]"
+        table.add_row(
+            "A",
+            "[#82aaff]alias[/]",
+            f"[bold]shell alias ({os.path.basename(get_shell_rc_path())})[/]",
+            "[dim]启动时自动加 --append-system-prompt-file[/]",
+            alias_st,
         )
-    )
-    table.add_row(
-        "S1",
-        "[#82aaff]shim[/]",
-        "[bold]claude.cmd 注入[/]",
-        "[dim]启动时自动加 --append-system-prompt-file[/]",
-        cmd_st,
-    )
-    table.add_row(
-        "S2",
-        "[#82aaff]shim[/]",
-        "[bold]claude.ps1 注入[/]",
-        "[dim]同 cmd, PowerShell 版[/]",
-        ps1_st,
-    )
+    else:
+        cmd_st = (
+            "[bold green]✓ 已注入[/]"
+            if state["shim_cmd"] == "patched"
+            else (
+                "[bold red]✗ 未注入[/]"
+                if state["shim_cmd"] == "original"
+                else "[dim](missing)[/]"
+            )
+        )
+        ps1_st = (
+            "[bold green]✓ 已注入[/]"
+            if state["shim_ps1"] == "patched"
+            else (
+                "[bold red]✗ 未注入[/]"
+                if state["shim_ps1"] == "original"
+                else "[dim](missing)[/]"
+            )
+        )
+        table.add_row(
+            "S1",
+            "[#82aaff]shim[/]",
+            "[bold]claude.cmd 注入[/]",
+            "[dim]启动时自动加 --append-system-prompt-file[/]",
+            cmd_st,
+        )
+        table.add_row(
+            "S2",
+            "[#82aaff]shim[/]",
+            "[bold]claude.ps1 注入[/]",
+            "[dim]同 cmd, PowerShell 版[/]",
+            ps1_st,
+        )
 
     # override.md 行
     md_st = (
@@ -727,9 +865,12 @@ def render_main(state):
 
     # ── 操作菜单 ──
     items = []
-    if pending > 0 or not shim_done or not override_done:
+    if pending > 0 or not inject_done or not override_done:
         items.append("[bold green]\\[A][/] 应用全部补丁")
-    if state["has_backup"] or state["shim_cmd"] == "patched":
+    can_revert = state["has_backup"] or (
+        state["alias_status"] == "installed" if is_mac else state["shim_cmd"] == "patched"
+    )
+    if can_revert:
         items.append("[bold yellow]\\[R][/] 回滚还原")
     items.append("[bold #82aaff]\\[E][/] 编辑 override.md")
     items.append("[bold cyan]\\[S][/] 重新扫描")
@@ -740,12 +881,13 @@ def render_main(state):
 
 
 def animate_apply(state):
-    """应用全部补丁 + shim + override.md，逐项动画"""
+    """应用全部补丁 + shim/alias + override.md，逐项动画"""
     exe = state["exe"]
     shim = state["shim"]
+    is_mac = state["is_mac"]
 
     if not exe:
-        console.print("\n  [red]✗ claude.exe not found[/]")
+        console.print("\n  [red]✗ claude binary not found[/]")
         return False
 
     # 1. 备份
@@ -753,13 +895,13 @@ def animate_apply(state):
     console.print()
     if not os.path.isfile(bak):
         shutil.copy2(exe, bak)
-        console.print(f"  [green]✓[/] 备份 cli.exe → [dim]{bak}[/]")
+        console.print(f"  [green]✓[/] 备份 → [dim]{bak}[/]")
     else:
         console.print(f"  [dim]- 备份已存在[/]")
     time.sleep(0.1)
 
-    # 2. patch cli.exe
-    console.print(f"  [cyan]→[/] 读取 cli.exe ({state['exe_size']/1048576:.1f} MB)...")
+    # 2. patch binary
+    console.print(f"  [cyan]→[/] 读取二进制 ({state['exe_size']/1048576:.1f} MB)...")
     with open(exe, "rb") as f:
         data = bytearray(f.read())
     report = apply_patches_to_data(data)
@@ -786,13 +928,13 @@ def animate_apply(state):
         if result.startswith("written_with_lock_bypass"):
             locked = result.split(": ", 1)[1]
             console.print(
-                f"\n  [yellow]⚠[/] .exe 被占用 — 旧版已重命名到 [dim]{locked}[/]"
+                f"\n  [yellow]⚠[/] 二进制被占用 — 旧版已重命名到 [dim]{locked}[/]"
             )
-            console.print(f"  [green]✓[/] 新 cli.exe 写入成功")
+            console.print(f"  [green]✓[/] 新二进制写入成功")
         else:
-            console.print(f"\n  [green]✓[/] cli.exe 写入成功")
+            console.print(f"\n  [green]✓[/] 二进制写入成功")
     else:
-        console.print(f"\n  [dim]- cli.exe 没有需要应用的 patch[/]")
+        console.print(f"\n  [dim]- 二进制没有需要应用的 patch[/]")
 
     # 3. override.md
     time.sleep(0.1)
@@ -802,9 +944,17 @@ def animate_apply(state):
     else:
         console.print(f"  [dim]- ~/.claude/override.md 已存在 (保留用户内容)[/]")
 
-    # 4. shim
+    # 4. 注入: Mac 用 alias, Windows 用 shim
     time.sleep(0.1)
-    if shim:
+    if is_mac:
+        r = install_shell_alias()
+        if r == "installed":
+            console.print(f"  [green]✓[/] shell alias 已写入 {get_shell_rc_path()}")
+        elif r == "already_installed":
+            console.print(f"  [dim]- shell alias 已存在[/]")
+        else:
+            console.print(f"  [yellow]⚠[/] alias: {r}")
+    elif shim:
         r = patch_shim(shim)
         for fname, st in r.items():
             if st == "patched":
@@ -817,12 +967,17 @@ def animate_apply(state):
     console.print(
         f"\n  [bold green]全部完成。[/] 下次启动 [bold]claude[/] 命令时 override.md 会自动注入到 system role 末尾。"
     )
+    if is_mac:
+        console.print(
+            f"  [dim]注: 需要重新打开终端或执行 source {get_shell_rc_path()} 使 alias 生效[/]"
+        )
     return True
 
 
 def animate_revert(state):
     exe = state["exe"]
     shim = state["shim"]
+    is_mac = state["is_mac"]
 
     console.print()
     if exe:
@@ -832,15 +987,21 @@ def animate_revert(state):
             if result.startswith("restored_with_lock_bypass"):
                 locked = result.split(": ", 1)[1]
                 console.print(
-                    f"  [yellow]⚠[/] .exe 被占用 — patched 版重命名到 [dim]{locked}[/]"
+                    f"  [yellow]⚠[/] 二进制被占用 — patched 版重命名到 [dim]{locked}[/]"
                 )
-                console.print(f"  [green]✓[/] 已从 .bak 恢复 cli.exe")
+                console.print(f"  [green]✓[/] 已从 .bak 恢复二进制")
             else:
-                console.print(f"  [green]✓[/] 已从 .bak 恢复 cli.exe")
+                console.print(f"  [green]✓[/] 已从 .bak 恢复二进制")
         else:
-            console.print(f"  [yellow]-[/] cli.exe 没有备份")
+            console.print(f"  [yellow]-[/] 二进制没有备份")
 
-    if shim:
+    if is_mac:
+        r = remove_shell_alias()
+        if r == "removed":
+            console.print(f"  [green]✓[/] shell alias 已从 {get_shell_rc_path()} 移除")
+        elif r == "not_found":
+            console.print(f"  [dim]- shell alias 未安装[/]")
+    elif shim:
         r = revert_shim(shim)
         for fname, st in r.items():
             if st == "reverted":
@@ -897,10 +1058,17 @@ def tui_loop():
 
         valid = []
         pending = state["patches_pending"]
-        shim_done = state["shim_cmd"] == "patched" and state["shim_ps1"] == "patched"
-        if pending > 0 or not shim_done or not state["override_exists"]:
+        is_mac = state["is_mac"]
+        if is_mac:
+            inject_done = state["alias_status"] == "installed"
+        else:
+            inject_done = state["shim_cmd"] == "patched" and state["shim_ps1"] == "patched"
+        if pending > 0 or not inject_done or not state["override_exists"]:
             valid.append("a")
-        if state["has_backup"] or state["shim_cmd"] == "patched":
+        can_revert = state["has_backup"] or (
+            state["alias_status"] == "installed" if is_mac else state["shim_cmd"] == "patched"
+        )
+        if can_revert:
             valid.append("r")
         valid += ["e", "s", "q"]
 
@@ -941,27 +1109,31 @@ def tui_loop():
 
 def silent_status():
     state = gather_state()
+    is_mac = state["is_mac"]
+    exe_label = "binary" if is_mac else "cli.exe"
     print(f"\nClaude Code 状态:\n")
-    print(f"  cli.exe        : {state['exe'] or '(NOT FOUND)'}")
+    print(f"  {exe_label:<14} : {state['exe'] or '(NOT FOUND)'}")
     if state["exe"]:
         print(
             f"                   v{state['version']}  size = {state['exe_size']/1048576:.1f} MB"
         )
         print(f"  备份           : {'有' if state['has_backup'] else '无'}")
         if state["patches_pending"] == 0:
-            print(f"  cli.exe patch  : 已 patch (限制串已清空)")
+            print(f"  binary patch   : 已 patch (限制串已清空)")
         else:
             print(
-                f"  cli.exe patch  : 未 patch ({state['patches_pending']} 处限制串仍在)"
+                f"  binary patch   : 未 patch ({state['patches_pending']} 处限制串仍在)"
             )
-    print(f"  npm shim 目录  : {state['shim'] or '(NOT FOUND)'}")
-    if state["shim"]:
-        for fname, key in [("claude.cmd", "shim_cmd"), ("claude.ps1", "shim_ps1")]:
-            v = state[key]
-            label = {"patched": "已 patch", "original": "原版", "missing": "(missing)"}[
-                v
-            ]
-            print(f"    {fname:<14} : {label}")
+    if is_mac:
+        alias_label = {"installed": "已安装", "not_installed": "未安装", "not_applicable": "N/A"}
+        print(f"  shell alias    : {alias_label.get(state['alias_status'], 'unknown')} ({get_shell_rc_path()})")
+    else:
+        print(f"  npm shim 目录  : {state['shim'] or '(NOT FOUND)'}")
+        if state["shim"]:
+            for fname, key in [("claude.cmd", "shim_cmd"), ("claude.ps1", "shim_ps1")]:
+                v = state[key]
+                label = {"patched": "已 patch", "original": "原版", "missing": "(missing)"}[v]
+                print(f"    {fname:<14} : {label}")
     print(
         f"  override.md    : {'有' if state['override_exists'] else '无'} ({state['override']})"
     )
@@ -969,8 +1141,9 @@ def silent_status():
 
 def silent_apply():
     state = gather_state()
+    is_mac = state["is_mac"]
     if not state["exe"]:
-        print("[ERROR] claude.exe not found")
+        print("[ERROR] claude binary not found")
         sys.exit(1)
     bak = state["exe"] + ".bak"
     if not os.path.isfile(bak):
@@ -989,7 +1162,10 @@ def silent_apply():
     r = install_override_md(force=False)
     print(f"override.md: {r}")
 
-    if state["shim"]:
+    if is_mac:
+        r = install_shell_alias()
+        print(f"shell alias: {r}")
+    elif state["shim"]:
         r = patch_shim(state["shim"])
         for fname, st in r.items():
             print(f"shim {fname}: {st}")
@@ -998,14 +1174,18 @@ def silent_apply():
 
 def silent_revert():
     state = gather_state()
+    is_mac = state["is_mac"]
     if state["exe"]:
         bak = state["exe"] + ".bak"
         if os.path.isfile(bak):
             result = restore_exe_with_lock_fallback(state["exe"], bak)
-            print(f"cli.exe: {result}")
+            print(f"binary: {result}")
         else:
-            print("cli.exe: 没有备份")
-    if state["shim"]:
+            print("binary: 没有备份")
+    if is_mac:
+        r = remove_shell_alias()
+        print(f"shell alias: {r}")
+    elif state["shim"]:
         r = revert_shim(state["shim"])
         for fname, st in r.items():
             print(f"shim {fname}: {st}")
