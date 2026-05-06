@@ -16,9 +16,17 @@ Claude Code CLI 限制移除补丁 v2 (Bun standalone 适配, Mac + Windows)
 
 用法:
   python claude-patch_v2.py              # 启动 TUI
-  python claude-patch_v2.py --apply      # 静默应用
+  python claude-patch_v2.py --check      # dry-run: 检测哪些 patch 可应用，不修改文件
+  python claude-patch_v2.py --apply      # 静默应用 (交互确认)
+  python claude-patch_v2.py --apply --yes # 静默应用，自动确认
   python claude-patch_v2.py --revert     # 静默回滚
   python claude-patch_v2.py --status     # 显示状态
+
+退出码 (--check):
+  0 = binary 已 patch, 无需操作
+  1 = 有可应用的 patch
+  2 = binary 未找到或读取失败
+  3 = patch 全部失效 (新版本结构变更)
 """
 
 import os
@@ -88,7 +96,11 @@ def find_claude_exe():
     if platform.system() == "Darwin":
         versions_dir = os.path.join(home, ".local", "share", "claude", "versions")
         if os.path.isdir(versions_dir):
-            versions = sorted(os.listdir(versions_dir))
+            versions = sorted(
+                v for v in os.listdir(versions_dir)
+                if not v.endswith((".bak", ".locked-by-running"))
+                and not ".locked-" in v
+            )
             if versions:
                 candidates.append(os.path.join(versions_dir, versions[-1]))
         # 也检查 symlink 解析
@@ -533,8 +545,37 @@ def install_override_md(force: bool = False) -> str:
 #  macOS shell alias 注入
 # ═══════════════════════════════════════════════════════════════════════
 
-ALIAS_MARKER = "# Claude Code override injection"
-ALIAS_LINE = "alias claude='claude --append-system-prompt-file ~/.claude/override.md'"
+ALIAS_MARKER = "# >>> Claude Code override injection >>>"
+ALIAS_END_MARKER = "# <<< Claude Code override injection <<<"
+
+
+def _build_alias_block() -> str:
+    patcher = os.path.abspath(__file__)
+    return f"""{ALIAS_MARKER}
+claude() {{
+  local _patcher="{patcher}"
+  if [[ "$1" == "install" || "$1" == "update" ]]; then
+    command claude "$@"
+    local _rc=$?
+    if [[ $_rc -eq 0 && -f "$_patcher" ]]; then
+      echo ""
+      echo "[claude-patch] 检测升级后 binary..."
+      python3 "$_patcher" --check
+      local _check_rc=$?
+      if [[ $_check_rc -eq 1 ]]; then
+        printf "[claude-patch] 应用 patch? [y/N] "
+        read REPLY
+        [[ "$REPLY" == "y" || "$REPLY" == "Y" ]] && python3 "$_patcher" --apply --yes
+      elif [[ $_check_rc -eq 3 ]]; then
+        echo "[claude-patch] ⚠ 部分 patch 失效，需更新 patcher 脚本"
+      fi
+    fi
+    return $_rc
+  else
+    command claude --append-system-prompt-file ~/.claude/override.md "$@"
+  fi
+}}
+{ALIAS_END_MARKER}"""
 
 
 def get_shell_rc_path() -> str:
@@ -552,7 +593,7 @@ def get_shell_rc_path() -> str:
 
 
 def shell_alias_status() -> str:
-    """Returns: 'installed', 'not_installed', 'not_applicable'"""
+    """Returns: 'installed', 'not_installed', 'not_applicable', 'outdated'"""
     if platform.system() != "Darwin":
         return "not_applicable"
     rc_path = get_shell_rc_path()
@@ -560,62 +601,105 @@ def shell_alias_status() -> str:
         return "not_installed"
     with open(rc_path, "r", encoding="utf-8", errors="replace") as f:
         content = f.read()
+    # 旧版 alias 检测 (单行)
+    if "alias claude='claude --append-system-prompt-file" in content and ALIAS_MARKER not in content:
+        return "outdated"
     if ALIAS_MARKER in content:
         return "installed"
     return "not_installed"
 
 
 def install_shell_alias() -> str:
-    """Install shell alias. Returns: 'installed', 'already_installed', 'error:<msg>'"""
+    """Install shell function. Returns: 'installed', 'already_installed', 'updated'"""
     if platform.system() != "Darwin":
         return "not_applicable"
     rc_path = get_shell_rc_path()
-    if os.path.isfile(rc_path):
-        with open(rc_path, "r", encoding="utf-8", errors="replace") as f:
-            content = f.read()
-        if ALIAS_MARKER in content:
-            return "already_installed"
-    else:
-        content = ""
+    status_before = shell_alias_status()
 
-    alias_block = f"\n{ALIAS_MARKER}\n{ALIAS_LINE}\n"
+    # 已是新版,无需重装
+    if status_before == "installed":
+        return "already_installed"
+
+    # 旧版 alias 存在,先移除
+    was_outdated = status_before == "outdated"
+    if was_outdated:
+        _remove_legacy_alias(rc_path)
+
+    block = "\n" + _build_alias_block() + "\n"
     with open(rc_path, "a", encoding="utf-8") as f:
-        f.write(alias_block)
-    return "installed"
+        f.write(block)
+    return "updated" if was_outdated else "installed"
+
+
+def _remove_legacy_alias(rc_path: str) -> bool:
+    """移除旧版单行 alias 和老 marker。"""
+    if not os.path.isfile(rc_path):
+        return False
+    with open(rc_path, "r", encoding="utf-8", errors="replace") as f:
+        lines = f.readlines()
+    legacy_marker = "# Claude Code override injection"
+    legacy_alias = "alias claude='claude --append-system-prompt-file"
+    new_lines = []
+    skip_alias = False
+    found = False
+    for line in lines:
+        # 旧 marker 行
+        if legacy_marker in line and ALIAS_MARKER not in line and ALIAS_END_MARKER not in line:
+            found = True
+            skip_alias = True
+            if new_lines and new_lines[-1].strip() == "":
+                new_lines.pop()
+            continue
+        if skip_alias and legacy_alias in line:
+            skip_alias = False
+            found = True
+            continue
+        skip_alias = False
+        # 也处理无 marker 的孤立 alias 行
+        if legacy_alias in line and ALIAS_MARKER not in lines[max(0, lines.index(line)-1)]:
+            found = True
+            continue
+        new_lines.append(line)
+    if found:
+        with open(rc_path, "w", encoding="utf-8") as f:
+            f.writelines(new_lines)
+    return found
 
 
 def remove_shell_alias() -> str:
-    """Remove shell alias. Returns: 'removed', 'not_found'"""
+    """Remove shell function block. Returns: 'removed', 'not_found'"""
     if platform.system() != "Darwin":
         return "not_applicable"
     rc_path = get_shell_rc_path()
     if not os.path.isfile(rc_path):
         return "not_found"
     with open(rc_path, "r", encoding="utf-8", errors="replace") as f:
-        lines = f.readlines()
+        content = f.read()
 
-    new_lines = []
-    skip_next = False
+    # 移除新版块 (start...end)
     found = False
-    for line in lines:
-        if ALIAS_MARKER in line:
-            found = True
-            skip_next = True
-            # also remove the preceding blank line added by install
-            if new_lines and new_lines[-1].strip() == "":
-                new_lines.pop()
-            continue
-        if skip_next and ALIAS_LINE in line:
-            skip_next = False
-            continue
-        skip_next = False
-        new_lines.append(line)
+    if ALIAS_MARKER in content and ALIAS_END_MARKER in content:
+        start = content.find(ALIAS_MARKER)
+        end = content.find(ALIAS_END_MARKER) + len(ALIAS_END_MARKER)
+        # 吃掉前后多余空行
+        while start > 0 and content[start - 1] == "\n":
+            start -= 1
+        while end < len(content) and content[end] == "\n":
+            end += 1
+        content = content[:start] + ("\n" if start > 0 else "") + content[end:]
+        found = True
+
+    # 移除旧版 alias
+    if _remove_legacy_alias(rc_path):
+        with open(rc_path, "r", encoding="utf-8", errors="replace") as f:
+            content = f.read()
+        found = True
 
     if not found:
         return "not_found"
 
     with open(rc_path, "w", encoding="utf-8") as f:
-        f.writelines(new_lines)
+        f.write(content)
     return "removed"
 
 
@@ -800,11 +884,12 @@ def render_main(state):
     table.add_section()
     # 注入行: Mac 用 alias, Windows 用 shim
     if state["is_mac"]:
-        alias_st = (
-            "[bold green]✓ 已安装[/]"
-            if state["alias_status"] == "installed"
-            else "[bold red]✗ 未安装[/]"
-        )
+        if state["alias_status"] == "installed":
+            alias_st = "[bold green]✓ 已安装[/]"
+        elif state["alias_status"] == "outdated":
+            alias_st = "[bold yellow]⚠ 需升级[/]"
+        else:
+            alias_st = "[bold red]✗ 未安装[/]"
         table.add_row(
             "A",
             "[#82aaff]alias[/]",
@@ -1125,7 +1210,12 @@ def silent_status():
                 f"  binary patch   : 未 patch ({state['patches_pending']} 处限制串仍在)"
             )
     if is_mac:
-        alias_label = {"installed": "已安装", "not_installed": "未安装", "not_applicable": "N/A"}
+        alias_label = {
+            "installed": "已安装 (新版函数)",
+            "outdated": "需升级 (旧版 alias)",
+            "not_installed": "未安装",
+            "not_applicable": "N/A",
+        }
         print(f"  shell alias    : {alias_label.get(state['alias_status'], 'unknown')} ({get_shell_rc_path()})")
     else:
         print(f"  npm shim 目录  : {state['shim'] or '(NOT FOUND)'}")
@@ -1139,25 +1229,66 @@ def silent_status():
     )
 
 
-def silent_apply():
+def silent_apply(auto_yes: bool = False):
     state = gather_state()
     is_mac = state["is_mac"]
     if not state["exe"]:
         print("[ERROR] claude binary not found")
         sys.exit(1)
+
+    # Pre-check: dry-run scan
+    try:
+        results = dry_run_check(state["exe"])
+    except Exception as e:
+        print(f"[ERROR] 扫描失败: {e}")
+        sys.exit(1)
+
+    applicable = sum(1 for r in results.values() if r["state"] == "applicable")
+    already = sum(1 for r in results.values() if r["state"] == "already_applied")
+    broken = sum(1 for r in results.values() if r["state"] == "broken")
+
+    print(f"扫描: {applicable} 可应用, {already} 已 patch, {broken} 失效")
+    if broken > 0:
+        broken_names = [
+            f"#{pid} {r['name']}" for pid, r in results.items() if r["state"] == "broken"
+        ]
+        print(f"  失效: {', '.join(broken_names)}")
+
+    if applicable == 0:
+        print("无需应用任何 binary patch")
+    elif not auto_yes:
+        try:
+            ans = input(f"应用 {applicable} 个 patch? [y/N]: ").strip().lower()
+        except (EOFError, KeyboardInterrupt):
+            ans = "n"
+        if ans != "y":
+            print("已取消")
+            sys.exit(0)
+
+    # Backup
     bak = state["exe"] + ".bak"
     if not os.path.isfile(bak):
         shutil.copy2(state["exe"], bak)
         print(f"备份 → {bak}")
 
-    with open(state["exe"], "rb") as f:
-        data = bytearray(f.read())
-    report = apply_patches_to_data(data)
-    applied = sum(1 for r in report if r["status"] == "applied")
-    print(f"应用 patch: {applied} 处")
-    if applied > 0:
-        result = write_exe_with_lock_fallback(state["exe"], bytes(data))
-        print(f"  写入: {result}")
+    # Apply
+    if applicable > 0:
+        with open(state["exe"], "rb") as f:
+            data = bytearray(f.read())
+        report = apply_patches_to_data(data)
+        applied = sum(1 for r in report if r["status"] == "applied")
+        print(f"应用 patch: {applied} 处")
+        if applied > 0:
+            result = write_exe_with_lock_fallback(state["exe"], bytes(data))
+            print(f"  写入: {result}")
+
+    # Cleanup old .bak files (other versions)
+    deleted = cleanup_old_baks(state["exe"])
+    if deleted:
+        total = sum(s for _, s in deleted) / 1048576
+        print(f"清理过期备份: {len(deleted)} 个 ({total:.1f} MB)")
+        for path, _ in deleted:
+            print(f"  删除 {path}")
 
     r = install_override_md(force=False)
     print(f"override.md: {r}")
@@ -1192,6 +1323,116 @@ def silent_revert():
     print("✓ 回滚完成")
 
 
+# ═══════════════════════════════════════════════════════════════════════
+#  Dry-run 检测 + 旧 .bak 清理
+# ═══════════════════════════════════════════════════════════════════════
+
+
+def dry_run_check(exe_path: str) -> dict:
+    """扫描 binary，返回每个 patch 的命中情况，不修改文件。"""
+    with open(exe_path, "rb") as f:
+        data = f.read()
+
+    locations = find_all_patch_locations(data)
+    by_pid = {}
+    for loc in locations:
+        by_pid.setdefault(loc["patch_id"], []).append(loc)
+
+    result = {}
+    for p in PATCHES:
+        if p.get("special") == "danger_table_skip":
+            continue
+        hits = len(by_pid.get(p["id"], []))
+        # 已经 patch 过的位置 anchor 已消失，find_all_patch_locations 不会命中
+        # 需要分别判断: anchor 还在 = 待 patch; anchor 不在且无命中 = 已 patch 或失效
+        already_patched = count_patch_status(data).get(p["id"]) == "applied"
+        if already_patched:
+            state = "already_applied"
+        elif hits > 0:
+            state = "applicable"
+        else:
+            state = "broken"  # anchor 在但 tail 找不到, 或结构变更
+        result[p["id"]] = {
+            "name": p["name"],
+            "layer": p["layer"],
+            "hits": hits,
+            "state": state,
+        }
+    return result
+
+
+def cleanup_old_baks(current_exe: str) -> list:
+    """删除非当前版本的 .bak 文件。返回已删除文件列表。"""
+    versions_dir = os.path.dirname(current_exe)
+    current_bak = os.path.basename(current_exe) + ".bak"
+    deleted = []
+    if not os.path.isdir(versions_dir):
+        return deleted
+    for name in os.listdir(versions_dir):
+        if name.endswith(".bak") and name != current_bak:
+            path = os.path.join(versions_dir, name)
+            try:
+                size = os.path.getsize(path)
+                os.remove(path)
+                deleted.append((path, size))
+            except OSError:
+                pass
+    return deleted
+
+
+def silent_check():
+    """Dry-run: 检测可应用的 patch，不修改文件。"""
+    state = gather_state()
+    if not state["exe"]:
+        print("[ERROR] claude binary not found")
+        sys.exit(2)
+
+    print(f"\nDry-run 检测: {state['exe']}")
+    print(f"版本: v{state['version']}  ({state['exe_size']/1048576:.1f} MB)\n")
+
+    try:
+        results = dry_run_check(state["exe"])
+    except Exception as e:
+        print(f"[ERROR] 扫描失败: {e}")
+        sys.exit(2)
+
+    applicable = sum(1 for r in results.values() if r["state"] == "applicable")
+    already = sum(1 for r in results.values() if r["state"] == "already_applied")
+    broken = sum(1 for r in results.values() if r["state"] == "broken")
+
+    state_label = {
+        "applicable": "\033[33m✓ 可应用\033[0m",
+        "already_applied": "\033[32m已 patch\033[0m",
+        "broken": "\033[31m✗ 失效 (新版结构变更)\033[0m",
+    }
+    print(f"{'#':<3} {'层':<6} {'名称':<32} {'命中':<6} 状态")
+    print("─" * 70)
+    for pid in sorted(results.keys()):
+        r = results[pid]
+        layer = r["layer"]
+        name = r["name"]
+        hits = r["hits"]
+        st = state_label[r["state"]]
+        print(f"{pid:<3} {layer:<6} {name:<32} {hits:<6} {st}")
+
+    print()
+    print(f"汇总: 可应用 {applicable}, 已 patch {already}, 失效 {broken}")
+
+    if broken > 0:
+        print(f"\n⚠ {broken} 个 patch 在新版本中失效。可能是 Claude 升级后代码结构变更。")
+        print("  建议检查 /Users/wowdd1/Dev/codex-session-patcher 是否有更新版本的脚本。")
+
+    if applicable == 0 and already > 0 and broken == 0:
+        sys.exit(0)
+    elif applicable > 0:
+        print(f"\n→ 运行 'python3 {sys.argv[0]} --apply' 应用这些 patch")
+        sys.exit(1)
+    elif broken > 0 and applicable == 0:
+        sys.exit(3)
+    else:
+        sys.exit(0)
+
+
 def main():
     if len(sys.argv) < 2:
         try:
@@ -1200,11 +1441,17 @@ def main():
             console.print("\n[dim]中断[/]")
         return
 
-    arg = sys.argv[1]
+    args = sys.argv[1:]
+    auto_yes = "--yes" in args or "-y" in args
+    args = [a for a in args if a not in ("--yes", "-y")]
+    arg = args[0] if args else ""
+
     if arg == "--status":
         silent_status()
+    elif arg == "--check":
+        silent_check()
     elif arg == "--apply":
-        silent_apply()
+        silent_apply(auto_yes=auto_yes)
     elif arg == "--revert":
         silent_revert()
     elif arg in ("-h", "--help"):
