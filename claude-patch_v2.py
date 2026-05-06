@@ -552,6 +552,7 @@ ALIAS_END_MARKER = "# <<< Claude Code override injection <<<"
 def _build_alias_block() -> str:
     patcher = os.path.abspath(__file__)
     return f"""{ALIAS_MARKER}
+unalias claude 2>/dev/null
 claude() {{
   local _patcher="{patcher}"
   if [[ "$1" == "install" || "$1" == "update" ]]; then
@@ -564,7 +565,7 @@ claude() {{
       local _check_rc=$?
       if [[ $_check_rc -eq 1 ]]; then
         printf "[claude-patch] 应用 patch? [y/N] "
-        read REPLY
+        read -r REPLY
         [[ "$REPLY" == "y" || "$REPLY" == "Y" ]] && python3 "$_patcher" --apply --yes
       elif [[ $_check_rc -eq 3 ]]; then
         echo "[claude-patch] ⚠ 部分 patch 失效，需更新 patcher 脚本"
@@ -614,37 +615,45 @@ def install_shell_alias() -> str:
     if platform.system() != "Darwin":
         return "not_applicable"
     rc_path = get_shell_rc_path()
-    status_before = shell_alias_status()
 
-    # 已是新版,无需重装
-    if status_before == "installed":
+    if os.path.isfile(rc_path):
+        with open(rc_path, "r", encoding="utf-8", errors="replace") as f:
+            content = f.read()
+    else:
+        content = ""
+
+    has_new = ALIAS_MARKER in content and ALIAS_END_MARKER in content
+    if has_new:
         return "already_installed"
 
-    # 旧版 alias 存在,先移除
-    was_outdated = status_before == "outdated"
-    if was_outdated:
-        _remove_legacy_alias(rc_path)
+    # 移除旧版 alias (in-memory)
+    content, had_legacy = _strip_legacy_alias(content)
 
-    block = "\n" + _build_alias_block() + "\n"
-    with open(rc_path, "a", encoding="utf-8") as f:
-        f.write(block)
-    return "updated" if was_outdated else "installed"
+    block = _build_alias_block()
+    if content and not content.endswith("\n"):
+        content += "\n"
+    content += "\n" + block + "\n"
+
+    with open(rc_path, "w", encoding="utf-8") as f:
+        f.write(content)
+    return "updated" if had_legacy else "installed"
 
 
-def _remove_legacy_alias(rc_path: str) -> bool:
-    """移除旧版单行 alias 和老 marker。"""
-    if not os.path.isfile(rc_path):
-        return False
-    with open(rc_path, "r", encoding="utf-8", errors="replace") as f:
-        lines = f.readlines()
+def _strip_legacy_alias(content: str) -> tuple:
+    """纯字符串操作: 移除旧版 marker 和单行 alias。返回 (新内容, 是否找到)。"""
     legacy_marker = "# Claude Code override injection"
     legacy_alias = "alias claude='claude --append-system-prompt-file"
+    lines = content.splitlines(keepends=True)
     new_lines = []
     skip_alias = False
     found = False
     for line in lines:
-        # 旧 marker 行
-        if legacy_marker in line and ALIAS_MARKER not in line and ALIAS_END_MARKER not in line:
+        # 旧 marker 行 (排除新版 start/end marker)
+        if (
+            legacy_marker in line
+            and ALIAS_MARKER not in line
+            and ALIAS_END_MARKER not in line
+        ):
             found = True
             skip_alias = True
             if new_lines and new_lines[-1].strip() == "":
@@ -655,15 +664,13 @@ def _remove_legacy_alias(rc_path: str) -> bool:
             found = True
             continue
         skip_alias = False
-        # 也处理无 marker 的孤立 alias 行
-        if legacy_alias in line and ALIAS_MARKER not in lines[max(0, lines.index(line)-1)]:
+        # 孤立的旧 alias 行 (前面无 marker)
+        prev = new_lines[-1] if new_lines else ""
+        if legacy_alias in line and ALIAS_MARKER not in prev:
             found = True
             continue
         new_lines.append(line)
-    if found:
-        with open(rc_path, "w", encoding="utf-8") as f:
-            f.writelines(new_lines)
-    return found
+    return "".join(new_lines), found
 
 
 def remove_shell_alias() -> str:
@@ -676,8 +683,9 @@ def remove_shell_alias() -> str:
     with open(rc_path, "r", encoding="utf-8", errors="replace") as f:
         content = f.read()
 
-    # 移除新版块 (start...end)
     found = False
+
+    # 移除新版块 (start...end)
     if ALIAS_MARKER in content and ALIAS_END_MARKER in content:
         start = content.find(ALIAS_MARKER)
         end = content.find(ALIAS_END_MARKER) + len(ALIAS_END_MARKER)
@@ -689,10 +697,9 @@ def remove_shell_alias() -> str:
         content = content[:start] + ("\n" if start > 0 else "") + content[end:]
         found = True
 
-    # 移除旧版 alias
-    if _remove_legacy_alias(rc_path):
-        with open(rc_path, "r", encoding="utf-8", errors="replace") as f:
-            content = f.read()
+    # 移除旧版 alias (内存操作)
+    content, had_legacy = _strip_legacy_alias(content)
+    if had_legacy:
         found = True
 
     if not found:
@@ -1021,6 +1028,16 @@ def animate_apply(state):
     else:
         console.print(f"\n  [dim]- 二进制没有需要应用的 patch[/]")
 
+    # 2.5 清理过期 .bak (其他版本)
+    deleted = cleanup_old_baks(exe)
+    if deleted:
+        total = sum(s for _, s in deleted) / 1048576
+        console.print(
+            f"  [green]✓[/] 清理过期备份 [dim]{len(deleted)} 个 ({total:.1f} MB)[/]"
+        )
+        for path, _ in deleted:
+            console.print(f"    [dim]- {path}[/]")
+
     # 3. override.md
     time.sleep(0.1)
     r = install_override_md(force=False)
@@ -1255,7 +1272,10 @@ def silent_apply(auto_yes: bool = False):
         print(f"  失效: {', '.join(broken_names)}")
 
     if applicable == 0:
-        print("无需应用任何 binary patch")
+        if broken > 0 and already == 0:
+            print("⚠ 全部 patch 在新版本中失效，跳过 binary 修改")
+        else:
+            print("binary 已 patch 或无可应用项")
     elif not auto_yes:
         try:
             ans = input(f"应用 {applicable} 个 patch? [y/N]: ").strip().lower()
@@ -1338,20 +1358,19 @@ def dry_run_check(exe_path: str) -> dict:
     for loc in locations:
         by_pid.setdefault(loc["patch_id"], []).append(loc)
 
+    status_map = count_patch_status(data)
     result = {}
     for p in PATCHES:
         if p.get("special") == "danger_table_skip":
             continue
         hits = len(by_pid.get(p["id"], []))
-        # 已经 patch 过的位置 anchor 已消失，find_all_patch_locations 不会命中
-        # 需要分别判断: anchor 还在 = 待 patch; anchor 不在且无命中 = 已 patch 或失效
-        already_patched = count_patch_status(data).get(p["id"]) == "applied"
-        if already_patched:
+        # anchor 不在 = 已 patch 或不存在；hits > 0 = 可应用；hits = 0 但 anchor 还在 = 失效
+        if status_map.get(p["id"]) == "applied":
             state = "already_applied"
         elif hits > 0:
             state = "applicable"
         else:
-            state = "broken"  # anchor 在但 tail 找不到, 或结构变更
+            state = "broken"
         result[p["id"]] = {
             "name": p["name"],
             "layer": p["layer"],
