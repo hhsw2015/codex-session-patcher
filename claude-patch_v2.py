@@ -367,16 +367,8 @@ PATCHES = [
         "tail_search_max": 600,
         "include_tail": True,
     },
-    {
-        "id": 15,
-        "name": "权限拒绝行为约束",
-        "layer": "提示词",
-        "desc": "权限被拒时禁止绕过/变通, 强制 STOP",
-        "anchor": b"do not use your ability to run tests to execute non-test actions",
-        "tail": b"Let the user decide how to proceed.",
-        "tail_search_max": 500,
-        "include_tail": True,
-    },
+    # #15 已移除: 权限拒绝行为约束 -- 这是"用户拒绝模型后模型要遵从"的指令,
+    # 移除会导致模型绕过用户的拒绝决定, 与目标矛盾。保留。
     {
         "id": 16,
         "name": "Auto mode 破坏限制",
