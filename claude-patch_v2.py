@@ -796,10 +796,11 @@ def remove_shell_alias() -> str:
 
 
 def write_exe_with_lock_fallback(exe: str, data: bytes) -> str:
-    """写 .exe，文件锁时用 rename 后备策略。返回状态字符串。"""
+    """原地写入二进制（保留 inode 和文件系统元数据）。"""
     try:
-        with open(exe, "wb") as f:
+        with open(exe, "r+b") as f:
             f.write(data)
+            f.truncate()
         return "written"
     except PermissionError:
         locked_path = exe + ".locked-by-running"
@@ -1079,7 +1080,7 @@ def animate_apply(state):
     bak = exe + ".bak"
     console.print()
     if will_apply > 0 and not os.path.isfile(bak):
-        shutil.copy2(exe, bak)
+        os.link(exe, bak)
         console.print(f"  [green]✓[/] 备份 → [dim]{bak}[/]")
     elif will_apply == 0:
         console.print(f"  [dim]- 跳过备份 (无可应用 patch)[/]")
@@ -1405,7 +1406,7 @@ def silent_apply(auto_yes: bool = False):
     # Backup (仅在有 patch 可应用时)
     bak = state["exe"] + ".bak"
     if applicable > 0 and not os.path.isfile(bak):
-        shutil.copy2(state["exe"], bak)
+        os.link(state["exe"], bak)
         print(f"备份 → {bak}")
 
     # Apply
