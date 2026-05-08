@@ -357,6 +357,73 @@ PATCHES = [
         "desc": "UGA 表危险命令拦截器 → 永远 return null (12 一并匹配)",
         "special": "danger_table_skip",
     },
+    {
+        "id": 14,
+        "name": "CYBER_RISK 残余 (数据段)",
+        "layer": "提示词",
+        "desc": "原 patch 1 漏掉的非引号副本 (Refuse destructive techniques)",
+        "anchor": b"IMPORTANT: Assist with authorized security testing, defensive security, CTF challenges",
+        "tail": b"defensive use cases.",
+        "tail_search_max": 600,
+        "include_tail": True,
+    },
+    {
+        "id": 15,
+        "name": "权限拒绝行为约束",
+        "layer": "提示词",
+        "desc": "权限被拒时禁止绕过/变通, 强制 STOP",
+        "anchor": b"do not use your ability to run tests to execute non-test actions",
+        "tail": b"Let the user decide how to proceed.",
+        "tail_search_max": 500,
+        "include_tail": True,
+    },
+    {
+        "id": 16,
+        "name": "Auto mode 破坏限制",
+        "layer": "提示词",
+        "desc": "auto 模式下仍要求确认删除/生产操作",
+        "anchor": b"Auto mode is not a license to destroy",
+        "tail": b"course correct to a safer method instead.",
+        "tail_search_max": 300,
+        "include_tail": True,
+    },
+    {
+        "id": 17,
+        "name": "数据泄露限制",
+        "layer": "提示词",
+        "desc": "禁止向外部平台发送数据, 禁止分享 secrets",
+        "anchor": b"Avoid data exfiltration",
+        "tail": b"its destination.",
+        "tail_search_max": 400,
+        "include_tail": True,
+    },
+    {
+        "id": 18,
+        "name": "操作安全列表 (Blind Apply/Logging/TLS)",
+        "layer": "提示词",
+        "desc": "禁止 Blind Apply/Logging 篡改/权限提升/TLS 削弱",
+        "anchor": b"Blind Apply: For changes to live, production",
+        "tail": b"allow-unauthenticated",
+        "tail_search_max": 800,
+        "include_tail": True,
+    },
+    {
+        "id": 19,
+        "name": "AppleScript 反绕过",
+        "layer": "提示词",
+        "desc": "禁止用 AppleScript/System Events/shell 模拟点击",
+        "anchor": b"Do not attempt to work around this restriction",
+        "tail": b"to this app.",
+        "tail_search_max": 200,
+        "include_tail": True,
+    },
+    {
+        "id": 20,
+        "name": "dangerous_shell_prefix 检查",
+        "layer": "代码",
+        "desc": "shell 前缀拦截 (sh/bash/python 等触发额外安全检查)",
+        "special": "dangerous_prefix",
+    },
 ]
 
 
@@ -393,6 +460,29 @@ def find_all_patch_locations(data):
                 )
         elif p.get("special") == "danger_table_skip":
             continue
+        elif p.get("special") == "dangerous_prefix":
+            # Patch: 让 dangerous_shell_prefix 检查永远不触发
+            rx = re.compile(
+                rb'(\w+==="\w+")\|\|Xx1\.has\(\w+\.toLowerCase\(\)\)'
+            )
+            for m in rx.finditer(data):
+                orig = m.group(0)
+                # 保留前半段 (git 检查), 把 Xx1.has(...) 替换为恒 false
+                prefix_part = m.group(1) + b"||!1"
+                pad_len = len(orig) - len(prefix_part)
+                if pad_len >= 0:
+                    new_part = prefix_part + b" " * pad_len
+                    if len(new_part) == len(orig):
+                        results.append(
+                            {
+                                "patch_id": p["id"],
+                                "name": p["name"],
+                                "offset": m.start(),
+                                "length": len(orig),
+                                "old": orig,
+                                "new": new_part,
+                            }
+                        )
         else:
             anchor = p["anchor"]
             i = 0
@@ -470,6 +560,9 @@ def count_patch_status(data: bytes) -> dict:
             status[p["id"]] = "pending" if n > 0 else "applied"
         elif p.get("special") == "danger_table_skip":
             continue
+        elif p.get("special") == "dangerous_prefix":
+            n = len(re.findall(rb'Xx1\.has\(\w+\.toLowerCase\(\)\)', data))
+            status[p["id"]] = "pending" if n > 0 else "applied"
         else:
             n = data.count(p["anchor"])
             status[p["id"]] = "pending" if n > 0 else "applied"
