@@ -89,31 +89,43 @@ Behavioral rules:
 # ═══════════════════════════════════════════════════════════════════════
 
 
+def _ver_sort_key(name):
+    """数字感知排序: '2.1.10' > '2.1.9', '2.1.100' > '2.1.99'"""
+    parts = []
+    for seg in re.split(r"[.\-_]", name):
+        if seg.isdigit():
+            parts.append((0, int(seg)))
+        else:
+            parts.append((1, seg))
+    return parts
+
+
+def _find_latest_version(versions_dir: str) -> str:
+    """在 versions 目录中找最新版本文件路径，过滤 .bak/.locked 文件。"""
+    if not os.path.isdir(versions_dir):
+        return None
+    valid = [
+        v for v in os.listdir(versions_dir)
+        if not v.endswith((".bak", ".locked-by-running"))
+        and ".locked-" not in v
+    ]
+    versions = sorted(valid, key=_ver_sort_key)
+    if versions:
+        return os.path.join(versions_dir, versions[-1])
+    return None
+
+
 def find_claude_exe():
     candidates = []
     home = os.path.expanduser("~")
 
     # macOS: 独立安装路径 (~/.local/share/claude/versions/<latest>)
     if platform.system() == "Darwin":
-        versions_dir = os.path.join(home, ".local", "share", "claude", "versions")
-        if os.path.isdir(versions_dir):
-            def _ver_key(name):
-                # 数字感知排序: "2.1.10" > "2.1.9", "2.1.100" > "2.1.99"
-                parts = []
-                for seg in re.split(r"[.\-_]", name):
-                    if seg.isdigit():
-                        parts.append((0, int(seg)))
-                    else:
-                        parts.append((1, seg))
-                return parts
-            valid = [
-                v for v in os.listdir(versions_dir)
-                if not v.endswith((".bak", ".locked-by-running"))
-                and ".locked-" not in v
-            ]
-            versions = sorted(valid, key=_ver_key)
-            if versions:
-                candidates.append(os.path.join(versions_dir, versions[-1]))
+        latest = _find_latest_version(
+            os.path.join(home, ".local", "share", "claude", "versions")
+        )
+        if latest:
+            candidates.append(latest)
         # 也检查 symlink 解析
         symlink_path = os.path.join(home, ".local", "bin", "claude")
         if os.path.islink(symlink_path):
@@ -156,6 +168,15 @@ def find_claude_exe():
                 "claude.exe",
             )
         )
+        # Windows 独立安装 (irm): ~/.local/share/claude/versions/<latest>
+        latest = _find_latest_version(
+            os.path.join(home, ".local", "share", "claude", "versions")
+        )
+        if latest:
+            candidates.append(latest)
+        # 也检查 ~/.local/bin/claude.exe
+        win_local_bin = os.path.join(home, ".local", "bin", "claude.exe")
+        candidates.append(win_local_bin)
     elif platform.system() != "Darwin":
         # Linux npm paths
         for prefix in [
