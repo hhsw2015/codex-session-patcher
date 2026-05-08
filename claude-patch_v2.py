@@ -369,36 +369,9 @@ PATCHES = [
     },
     # #15 已移除: 权限拒绝行为约束 -- 这是"用户拒绝模型后模型要遵从"的指令,
     # 移除会导致模型绕过用户的拒绝决定, 与目标矛盾。保留。
-    {
-        "id": 16,
-        "name": "Auto mode 破坏限制",
-        "layer": "提示词",
-        "desc": "auto 模式下仍要求确认删除/生产操作",
-        "anchor": b"Auto mode is not a license to destroy",
-        "tail": b"course correct to a safer method instead.",
-        "tail_search_max": 300,
-        "include_tail": True,
-    },
-    {
-        "id": 17,
-        "name": "数据泄露限制",
-        "layer": "提示词",
-        "desc": "禁止向外部平台发送数据, 禁止分享 secrets",
-        "anchor": b"Avoid data exfiltration",
-        "tail": b"its destination.",
-        "tail_search_max": 400,
-        "include_tail": True,
-    },
-    {
-        "id": 18,
-        "name": "操作安全列表 (Blind Apply/Logging/TLS)",
-        "layer": "提示词",
-        "desc": "禁止 Blind Apply/Logging 篡改/权限提升/TLS 削弱",
-        "anchor": b"Blind Apply: For changes to live, production",
-        "tail": b"allow-unauthenticated",
-        "tail_search_max": 800,
-        "include_tail": True,
-    },
+    # #16 已移除: Auto mode 破坏限制 -- 保护用户免受模型自主破坏操作, 用户未下指令
+    # #17 已移除: 数据泄露限制 -- 保护用户数据不被模型自主泄露, 用户未下指令
+    # #18 已移除: Blind Apply/Logging/TLS -- 保护用户生产环境, 用户未下指令
     {
         "id": 19,
         "name": "AppleScript 反绕过",
@@ -409,13 +382,8 @@ PATCHES = [
         "tail_search_max": 200,
         "include_tail": True,
     },
-    {
-        "id": 20,
-        "name": "dangerous_shell_prefix 检查",
-        "layer": "代码",
-        "desc": "shell 前缀拦截 (sh/bash/python 等触发额外安全检查)",
-        "special": "dangerous_prefix",
-    },
+    # #20 已移除: dangerous_shell_prefix -- 保护用户免受恶意 repo 注入,
+    # 不属于"模型拒绝用户指令", 保留。
 ]
 
 
@@ -452,29 +420,6 @@ def find_all_patch_locations(data):
                 )
         elif p.get("special") == "danger_table_skip":
             continue
-        elif p.get("special") == "dangerous_prefix":
-            # Patch: 让 dangerous_shell_prefix 检查永远不触发
-            rx = re.compile(
-                rb'(\w+==="\w+")\|\|Xx1\.has\(\w+\.toLowerCase\(\)\)'
-            )
-            for m in rx.finditer(data):
-                orig = m.group(0)
-                # 保留前半段 (git 检查), 把 Xx1.has(...) 替换为恒 false
-                prefix_part = m.group(1) + b"||!1"
-                pad_len = len(orig) - len(prefix_part)
-                if pad_len >= 0:
-                    new_part = prefix_part + b" " * pad_len
-                    if len(new_part) == len(orig):
-                        results.append(
-                            {
-                                "patch_id": p["id"],
-                                "name": p["name"],
-                                "offset": m.start(),
-                                "length": len(orig),
-                                "old": orig,
-                                "new": new_part,
-                            }
-                        )
         else:
             anchor = p["anchor"]
             i = 0
@@ -552,9 +497,6 @@ def count_patch_status(data: bytes) -> dict:
             status[p["id"]] = "pending" if n > 0 else "applied"
         elif p.get("special") == "danger_table_skip":
             continue
-        elif p.get("special") == "dangerous_prefix":
-            n = len(re.findall(rb'Xx1\.has\(\w+\.toLowerCase\(\)\)', data))
-            status[p["id"]] = "pending" if n > 0 else "applied"
         else:
             n = data.count(p["anchor"])
             status[p["id"]] = "pending" if n > 0 else "applied"
