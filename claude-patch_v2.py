@@ -1546,7 +1546,17 @@ def silent_check():
         "already_applied": "\033[32m已 patch\033[0m",
         "broken": "\033[31m✗ 失效 (新版结构变更)\033[0m",
     }
-    print(f"{'#':<3} {'层':<6} {'名称':<32} {'命中':<6} 状态")
+
+    def _display_width(s):
+        w = 0
+        for c in s:
+            w += 2 if ord(c) > 0x7F else 1
+        return w
+
+    def _pad(s, width):
+        return s + " " * max(0, width - _display_width(s))
+
+    print(f"{'#':<4}{_pad('层', 8)}{_pad('名称', 36)}{'命中':<6} 状态")
     print("─" * 70)
     for pid in sorted(results.keys()):
         r = results[pid]
@@ -1554,7 +1564,7 @@ def silent_check():
         name = r["name"]
         hits = r["hits"]
         st = state_label[r["state"]]
-        print(f"{pid:<3} {layer:<6} {name:<32} {hits:<6} {st}")
+        print(f"{pid:<4}{_pad(layer, 8)}{_pad(name, 36)}{hits:<6} {st}")
 
     print()
     print(f"汇总: 可应用 {applicable}, 已 patch {already}, 失效 {broken}")
