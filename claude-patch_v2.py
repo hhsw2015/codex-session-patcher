@@ -21,6 +21,7 @@ Claude Code CLI 限制移除补丁 v2 (Bun standalone 适配, Mac + Windows)
   python claude-patch_v2.py --apply --yes # 静默应用，自动确认
   python claude-patch_v2.py --revert     # 静默回滚
   python claude-patch_v2.py --status     # 显示状态
+  python claude-patch_v2.py --path /path/to/claude [cmd]  # 手动指定 binary 路径
 
 退出码 (--check):
   0 = 无需操作 (全部已 patch, 或 mixed 已 patch + 失效)
@@ -115,7 +116,21 @@ def _find_latest_version(versions_dir: str) -> str:
     return None
 
 
+_MANUAL_PATH = None
+
+
 def find_claude_exe():
+    if _MANUAL_PATH:
+        if os.path.isfile(_MANUAL_PATH):
+            return _MANUAL_PATH
+        if os.path.isdir(_MANUAL_PATH):
+            exe_name = "claude.exe" if platform.system() == "Windows" else "claude"
+            for sub in ["", "bin"]:
+                cand = os.path.join(_MANUAL_PATH, sub, exe_name) if sub else os.path.join(_MANUAL_PATH, exe_name)
+                if os.path.isfile(cand):
+                    return cand
+        return None
+
     candidates = []
     home = os.path.expanduser("~")
 
@@ -1688,6 +1703,18 @@ def silent_check():
 
 
 def main():
+    global _MANUAL_PATH
+
+    # 解析 --path
+    if "--path" in sys.argv:
+        idx = sys.argv.index("--path")
+        if idx + 1 < len(sys.argv):
+            _MANUAL_PATH = sys.argv[idx + 1]
+            del sys.argv[idx:idx + 2]
+        else:
+            print("错误: --path 需要指定路径")
+            sys.exit(1)
+
     if len(sys.argv) < 2:
         try:
             tui_loop()
