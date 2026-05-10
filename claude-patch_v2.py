@@ -616,36 +616,10 @@ ALIAS_END_MARKER = "# <<< Claude Code override injection <<<"
 
 
 def _build_alias_block() -> str:
-    patcher_quoted = shlex.quote(os.path.abspath(__file__))
+    wrapper = shlex.quote(os.path.join(os.path.expanduser("~"), ".local", "bin", "claude-with-override"))
     return f"""{ALIAS_MARKER}
 unalias claude 2>/dev/null
-claude() {{
-  local _patcher={patcher_quoted}
-  if [[ "$1" == "install" || "$1" == "update" ]]; then
-    command claude "$@"
-    local _rc=$?
-    if [[ $_rc -eq 0 && -f "$_patcher" ]]; then
-      echo ""
-      echo "[claude-patch] 检测升级后 binary..."
-      python3 "$_patcher" --check
-      local _check_rc=$?
-      if [[ $_check_rc -eq 1 ]]; then
-        printf "[claude-patch] 应用 patch? (失效项见上方表格) [y/N] "
-        read -r REPLY
-        [[ "$REPLY" == "y" || "$REPLY" == "Y" ]] && python3 "$_patcher" --apply --yes
-      elif [[ $_check_rc -eq 3 ]]; then
-        echo "[claude-patch] ⚠ 全部 patch 在新版失效，需更新 patcher 脚本"
-      fi
-    fi
-    return $_rc
-  else
-    if [[ " $* " == *"--append-system-prompt-file"* ]]; then
-      command claude "$@"
-    else
-      command claude --append-system-prompt-file ~/.claude/override.md "$@"
-    fi
-  fi
-}}
+claude() {{ {wrapper} "$@"; }}
 {ALIAS_END_MARKER}"""
 
 
