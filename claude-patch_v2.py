@@ -615,8 +615,109 @@ ALIAS_MARKER = "# >>> Claude Code override injection >>>"
 ALIAS_END_MARKER = "# <<< Claude Code override injection <<<"
 
 
+WRAPPER_PATH = os.path.join(os.path.expanduser("~"), "bin", "claude-with-override")
+CMUX_ENV_LINE = 'export CMUX_CUSTOM_CLAUDE_PATH="$HOME/bin/claude-with-override"'
+
+
+def _build_wrapper_script() -> str:
+    patcher = os.path.abspath(__file__)
+    return f"""#!/bin/bash
+# 统一 Claude 入口: 注入 override.md + 升级后自动检测 patch
+PATCHER={shlex.quote(patcher)}
+OVERRIDE="$HOME/.claude/override.md"
+
+find_real_binary() {{
+    local versions_dir="$HOME/.local/share/claude/versions"
+    if [[ -d "$versions_dir" ]]; then
+        local latest
+        latest="$(ls "$versions_dir" | grep -v '\\.bak\\|\\.locked' | sort -V | tail -1)"
+        if [[ -n "$latest" && -x "$versions_dir/$latest" ]]; then
+            printf '%s' "$versions_dir/$latest"
+            return 0
+        fi
+    fi
+    local self_dir
+    self_dir="$(cd "$(dirname "$0")" && pwd)"
+    local IFS=:
+    for d in $PATH; do
+        [[ "$d" == "$self_dir" ]] && continue
+        [[ -x "$d/claude" && ! "$d/claude" -ef "$0" ]] && printf '%s' "$d/claude" && return 0
+    done
+    return 1
+}}
+
+REAL_CLAUDE="$(find_real_binary)" || {{ echo "Error: claude binary not found" >&2; exit 127; }}
+
+if [[ "$1" == "install" || "$1" == "update" ]]; then
+    "$REAL_CLAUDE" "$@"
+    _rc=$?
+    if [[ $_rc -eq 0 && -f "$PATCHER" ]]; then
+        echo ""
+        echo "[claude-patch] 检测升级后 binary..."
+        python3 "$PATCHER" --check
+        _check_rc=$?
+        if [[ $_check_rc -eq 1 ]]; then
+            printf "[claude-patch] 应用 patch? (失效项见上方表格) [y/N] "
+            read -r REPLY
+            [[ "$REPLY" == "y" || "$REPLY" == "Y" ]] && python3 "$PATCHER" --apply --yes
+        elif [[ $_check_rc -eq 3 ]]; then
+            echo "[claude-patch] ⚠ 全部 patch 在新版失效，需更新 patcher 脚本"
+        fi
+    fi
+    exit $_rc
+fi
+
+if [[ " $* " == *"--append-system-prompt-file"* ]]; then
+    exec "$REAL_CLAUDE" "$@"
+elif [[ -f "$OVERRIDE" ]]; then
+    exec "$REAL_CLAUDE" --append-system-prompt-file "$OVERRIDE" "$@"
+else
+    exec "$REAL_CLAUDE" "$@"
+fi
+"""
+
+
+def install_wrapper_script() -> str:
+    """创建 ~/bin/claude-with-override。Returns: 'installed', 'updated', 'already_installed'"""
+    os.makedirs(os.path.dirname(WRAPPER_PATH), exist_ok=True)
+    new_content = _build_wrapper_script()
+    if os.path.isfile(WRAPPER_PATH):
+        with open(WRAPPER_PATH, "r", encoding="utf-8", errors="replace") as f:
+            existing = f.read()
+        if existing.strip() == new_content.strip():
+            return "already_installed"
+        with open(WRAPPER_PATH, "w", encoding="utf-8") as f:
+            f.write(new_content)
+        os.chmod(WRAPPER_PATH, 0o755)
+        return "updated"
+    with open(WRAPPER_PATH, "w", encoding="utf-8") as f:
+        f.write(new_content)
+    os.chmod(WRAPPER_PATH, 0o755)
+    return "installed"
+
+
+def install_cmux_env() -> str:
+    """在 shell rc 中设置 CMUX_CUSTOM_CLAUDE_PATH。"""
+    if platform.system() != "Darwin":
+        return "not_applicable"
+    rc_path = get_shell_rc_path()
+    if os.path.isfile(rc_path):
+        with open(rc_path, "r", encoding="utf-8", errors="replace") as f:
+            content = f.read()
+    else:
+        content = ""
+    if "CMUX_CUSTOM_CLAUDE_PATH" in content:
+        return "already_set"
+    if content and not content.endswith("\n"):
+        content += "\n"
+    content += f"\n{CMUX_ENV_LINE}\n"
+    with open(rc_path, "w", encoding="utf-8") as f:
+        f.write(content)
+    return "set"
+
+
 def _build_alias_block() -> str:
-    wrapper = shlex.quote(os.path.join(os.path.expanduser("~"), ".local", "bin", "claude-with-override"))
+    wrapper = shlex.quote(WRAPPER_PATH)
     return f"""{ALIAS_MARKER}
 unalias claude 2>/dev/null
 claude() {{ {wrapper} "$@"; }}
@@ -1138,18 +1239,28 @@ def animate_apply(state):
     else:
         console.print(f"  [dim]- ~/.claude/override.md 已存在 (保留用户内容)[/]")
 
-    # 4. 注入: Mac 用 alias, Windows 用 shim
+    # 4. 注入: wrapper + alias + cmux env
     time.sleep(0.1)
     if is_mac:
-        r = install_shell_alias()
+        r = install_wrapper_script()
         if r == "installed":
-            console.print(f"  [green]✓[/] shell alias 已写入 {get_shell_rc_path()}")
+            console.print(f"  [green]✓[/] wrapper 已创建 {WRAPPER_PATH}")
         elif r == "updated":
-            console.print(f"  [green]✓[/] shell alias 已升级 (旧版替换为新版函数)")
-        elif r == "repath":
-            console.print(f"  [green]✓[/] shell alias 已更新 (脚本路径变更)")
+            console.print(f"  [green]✓[/] wrapper 已更新")
+        else:
+            console.print(f"  [dim]- wrapper 已存在[/]")
+
+        r = install_cmux_env()
+        if r == "set":
+            console.print(f"  [green]✓[/] CMUX_CUSTOM_CLAUDE_PATH 已设置")
+        elif r == "already_set":
+            console.print(f"  [dim]- CMUX_CUSTOM_CLAUDE_PATH 已存在[/]")
+
+        r = install_shell_alias()
+        if r in ("installed", "updated", "repath"):
+            console.print(f"  [green]✓[/] shell function 已写入 {get_shell_rc_path()}")
         elif r == "already_installed":
-            console.print(f"  [dim]- shell alias 已存在[/]")
+            console.print(f"  [dim]- shell function 已存在[/]")
         else:
             console.print(f"  [yellow]⚠[/] alias: {r}")
     elif shim:
@@ -1410,8 +1521,9 @@ def silent_apply(auto_yes: bool = False):
     print(f"override.md: {r}")
 
     if is_mac:
-        r = install_shell_alias()
-        print(f"shell alias: {r}")
+        print(f"wrapper: {install_wrapper_script()}")
+        print(f"cmux env: {install_cmux_env()}")
+        print(f"shell function: {install_shell_alias()}")
     elif state["shim"]:
         r = patch_shim(state["shim"])
         for fname, st in r.items():
