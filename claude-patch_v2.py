@@ -639,7 +639,11 @@ claude() {{
     fi
     return $_rc
   else
-    command claude --append-system-prompt-file ~/.claude/override.md "$@"
+    if [[ " $* " == *"--append-system-prompt-file"* ]]; then
+      command claude "$@"
+    else
+      command claude --append-system-prompt-file ~/.claude/override.md "$@"
+    fi
   fi
 }}
 {ALIAS_END_MARKER}"""
