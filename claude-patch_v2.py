@@ -879,13 +879,27 @@ def remove_shell_alias() -> str:
     return "removed"
 
 
+def _adhoc_sign(path: str) -> str:
+    """macOS: ad-hoc 重签名，修复 Gatekeeper 校验。"""
+    if platform.system() != "Darwin":
+        return ""
+    try:
+        r = subprocess.run(
+            ["codesign", "--force", "--sign", "-", path],
+            capture_output=True, text=True, timeout=30
+        )
+        return " + signed" if r.returncode == 0 else f" (sign failed: {r.stderr.strip()[:60]})"
+    except (FileNotFoundError, subprocess.TimeoutExpired):
+        return " (codesign unavailable)"
+
+
 def write_exe_with_lock_fallback(exe: str, data: bytes) -> str:
-    """原地写入二进制（保留 inode 和文件系统元数据）。"""
+    """原地写入二进制（保留 inode 和文件系统元数据），macOS 自动重签名。"""
     try:
         with open(exe, "r+b") as f:
             f.write(data)
             f.truncate()
-        return "written"
+        return "written" + _adhoc_sign(exe)
     except PermissionError:
         locked_path = exe + ".locked-by-running"
         if os.path.isfile(locked_path):
@@ -896,7 +910,7 @@ def write_exe_with_lock_fallback(exe: str, data: bytes) -> str:
         os.rename(exe, locked_path)
         with open(exe, "wb") as f:
             f.write(data)
-        return f"written_with_lock_bypass: {locked_path}"
+        return f"written_with_lock_bypass: {locked_path}" + _adhoc_sign(exe)
 
 
 def restore_exe_with_lock_fallback(exe: str, bak: str) -> str:
