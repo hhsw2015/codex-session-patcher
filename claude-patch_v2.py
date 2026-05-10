@@ -621,9 +621,14 @@ CMUX_ENV_LINE = 'export CMUX_CUSTOM_CLAUDE_PATH="$HOME/bin/claude-with-override"
 
 def _build_wrapper_script() -> str:
     patcher = os.path.abspath(__file__)
+    home = os.path.expanduser("~")
+    if patcher.startswith(home):
+        patcher_shell = '"$HOME' + patcher[len(home):] + '"'
+    else:
+        patcher_shell = shlex.quote(patcher)
     return f"""#!/bin/bash
 # 统一 Claude 入口: 注入 override.md + 升级后自动检测 patch
-PATCHER={shlex.quote(patcher)}
+PATCHER={patcher_shell}
 OVERRIDE="$HOME/.claude/override.md"
 
 find_real_binary() {{
