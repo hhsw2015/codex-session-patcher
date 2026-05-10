@@ -717,10 +717,10 @@ def install_cmux_env() -> str:
 
 
 def _build_alias_block() -> str:
-    wrapper = shlex.quote(WRAPPER_PATH)
     return f"""{ALIAS_MARKER}
+export CMUX_CUSTOM_CLAUDE_PATH="$HOME/bin/claude-with-override"
 unalias claude 2>/dev/null
-claude() {{ {wrapper} "$@"; }}
+claude() {{ "$HOME/bin/claude-with-override" "$@"; }}
 {ALIAS_END_MARKER}"""
 
 
@@ -1239,7 +1239,7 @@ def animate_apply(state):
     else:
         console.print(f"  [dim]- ~/.claude/override.md 已存在 (保留用户内容)[/]")
 
-    # 4. 注入: wrapper + alias + cmux env
+    # 4. 注入: wrapper + shell block (含 env var + function)
     time.sleep(0.1)
     if is_mac:
         r = install_wrapper_script()
@@ -1250,19 +1250,13 @@ def animate_apply(state):
         else:
             console.print(f"  [dim]- wrapper 已存在[/]")
 
-        r = install_cmux_env()
-        if r == "set":
-            console.print(f"  [green]✓[/] CMUX_CUSTOM_CLAUDE_PATH 已设置")
-        elif r == "already_set":
-            console.print(f"  [dim]- CMUX_CUSTOM_CLAUDE_PATH 已存在[/]")
-
         r = install_shell_alias()
         if r in ("installed", "updated", "repath"):
-            console.print(f"  [green]✓[/] shell function 已写入 {get_shell_rc_path()}")
+            console.print(f"  [green]✓[/] shell block 已写入 {get_shell_rc_path()}")
         elif r == "already_installed":
-            console.print(f"  [dim]- shell function 已存在[/]")
+            console.print(f"  [dim]- shell block 已存在[/]")
         else:
-            console.print(f"  [yellow]⚠[/] alias: {r}")
+            console.print(f"  [yellow]⚠[/] shell block: {r}")
     elif shim:
         r = patch_shim(shim)
         for fname, st in r.items():
@@ -1522,8 +1516,7 @@ def silent_apply(auto_yes: bool = False):
 
     if is_mac:
         print(f"wrapper: {install_wrapper_script()}")
-        print(f"cmux env: {install_cmux_env()}")
-        print(f"shell function: {install_shell_alias()}")
+        print(f"shell block: {install_shell_alias()}")
     elif state["shim"]:
         r = patch_shim(state["shim"])
         for fname, st in r.items():
