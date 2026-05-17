@@ -388,28 +388,31 @@
                     <span class="op-icon">{{ opIcon(op.type) }}</span>
                     <span class="op-type">{{ op.type }}</span>
                     <span class="op-summary" :title="op.summary">{{ op.summary }}</span>
-                    <span v-if="op.is_destructive" class="op-warn" title="不可逆操作">⚠</span>
-                    <span class="op-state-badge" :class="opState(op).toLowerCase()">{{ opStateLabel(op) }}</span>
-                    <n-button
-                      v-if="opState(op) === 'active'"
-                      size="tiny"
-                      type="warning"
-                      :loading="ccundoActing.has(op.id)"
-                      :disabled="!ccundoAvailable"
-                      @click="doCcundo(op, 'undo')"
-                    >
-                      ↶ {{ $t('preview.undo') || 'Undo' }}
-                    </n-button>
-                    <n-button
-                      v-else-if="opState(op) === 'undone'"
-                      size="tiny"
-                      type="primary"
-                      :loading="ccundoActing.has(op.id)"
-                      :disabled="!ccundoAvailable"
-                      @click="doCcundo(op, 'redo')"
-                    >
-                      ↷ {{ $t('preview.redo') || 'Redo' }}
-                    </n-button>
+                    <span v-if="op.is_destructive" class="op-warn" title="不可逆: ccundo 仅标记状态">⚠</span>
+                    <template v-if="isCcundoTracked(op)">
+                      <span class="op-state-badge" :class="opState(op).toLowerCase()">{{ opStateLabel(op) }}</span>
+                      <n-button
+                        v-if="opState(op) === 'active'"
+                        size="tiny"
+                        type="warning"
+                        :loading="ccundoActing.has(op.id)"
+                        :disabled="!ccundoAvailable"
+                        @click="doCcundo(op, 'undo')"
+                      >
+                        ↶ {{ $t('preview.undo') || 'Undo' }}
+                      </n-button>
+                      <n-button
+                        v-else-if="opState(op) === 'undone'"
+                        size="tiny"
+                        type="primary"
+                        :loading="ccundoActing.has(op.id)"
+                        :disabled="!ccundoAvailable"
+                        @click="doCcundo(op, 'redo')"
+                      >
+                        ↷ {{ $t('preview.redo') || 'Redo' }}
+                      </n-button>
+                    </template>
+                    <span v-else class="op-untracked" :title="$t('preview.ccundoUntracked') || 'ccundo 不跟踪此类型'">—</span>
                   </div>
                   <div v-if="!ccundoAvailable" class="ccundo-hint">
                     {{ $t('preview.ccundoMissing') || '未检测到 ccundo, 安装: npm install -g ccundo' }}
@@ -550,6 +553,10 @@ async function refreshCcundoStates(sessionId) {
 // ccundo 实际跟踪的工具类型 (其他类型不会被级联,过滤掉)
 const _CCUNDO_TRACKED = new Set(['Edit', 'MultiEdit', 'Write', 'NotebookEdit', 'Bash'])
 
+function isCcundoTracked(op) {
+  return _CCUNDO_TRACKED.has(op.type)
+}
+
 function buildCascadePreview(op, action) {
   if (!preview.value || !preview.value.conversation_summary) return []
   const allOps = []
@@ -619,14 +626,18 @@ onMounted(async () => {
   } catch (e) {
     ccundoAvailable.value = false
   }
+  // status 异步返回后, 若已选 session 立即刷新 (watch immediate 早于 status 完成)
+  if (ccundoAvailable.value && sessionStore.selectedId) {
+    await refreshCcundoStates(sessionStore.selectedId)
+  }
 })
 
-// 监听 session 切换, 刷新 ccundo 状态
+// 监听 session 切换, 刷新 ccundo 状态 (immediate=true 处理首次挂载)
 watch(() => sessionStore.selectedId, async (sid) => {
   ccundoStates.value = {}
   expandedToolTurns.value = new Set()
-  if (sid) await refreshCcundoStates(sid)
-})
+  if (sid && ccundoAvailable.value) await refreshCcundoStates(sid)
+}, { immediate: true })
 let _searchTimer = null
 watch(conversationSearch, (val) => {
   clearTimeout(_searchTimer)
@@ -1479,6 +1490,11 @@ watch(() => sessionStore.selectedId, () => {
 .op-state-badge.undone {
   background: rgba(245, 169, 109, 0.15);
   color: #f5a96d;
+}
+.op-untracked {
+  color: var(--color-text-3, #666);
+  font-size: 11px;
+  flex-shrink: 0;
 }
 .ccundo-hint {
   padding: 6px;

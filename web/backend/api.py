@@ -36,8 +36,9 @@ from .schemas import (
 #  Tool use 提取 (用于 ccundo 集成)
 # ═══════════════════════════════════════════════════════════════════════
 
-# 不可逆操作类型 (Bash 默认不可逆, 其他工具按需扩展)
-_DESTRUCTIVE_TOOLS = {"Bash", "BashOutput"}
+# 不可逆操作类型 (Bash 副作用 ccundo 无法真正还原, 仅标记状态)
+# BashOutput 只读取已运行进程输出, 非破坏性
+_DESTRUCTIVE_TOOLS = {"Bash"}
 
 # 文件操作类型 (有明确 file_path)
 _FILE_TOOLS = {"Edit", "Write", "Read", "NotebookEdit", "MultiEdit"}
