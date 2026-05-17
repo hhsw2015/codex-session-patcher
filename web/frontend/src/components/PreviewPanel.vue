@@ -373,7 +373,7 @@
                 <div class="tool-uses-header" @click="toggleToolUses(turn.line_num)">
                   <span class="tool-uses-chevron">{{ expandedToolTurns.has(turn.line_num) ? '▼' : '▶' }}</span>
                   <span class="tool-uses-icon">🔧</span>
-                  <span>{{ turn.tool_uses.length }} {{ $t('preview.toolUses') || '个文件操作' }}</span>
+                  <span>{{ toolUsesHeader(turn.tool_uses) }}</span>
                   <span v-if="ccundoSummary(turn.tool_uses)" class="tool-uses-summary">
                     {{ ccundoSummary(turn.tool_uses) }}
                   </span>
@@ -387,7 +387,7 @@
                   >
                     <span class="op-icon">{{ opIcon(op.type) }}</span>
                     <span class="op-type">{{ op.type }}</span>
-                    <span class="op-summary" :title="op.summary">{{ op.summary }}</span>
+                    <span class="op-summary" :title="opTooltip(op)">{{ op.summary }}</span>
                     <span v-if="op.is_destructive" class="op-warn" title="不可逆: ccundo 仅标记状态">⚠</span>
                     <template v-if="isCcundoTracked(op)">
                       <span class="op-state-badge" :class="opState(op).toLowerCase()">{{ opStateLabel(op) }}</span>
@@ -538,10 +538,16 @@ function ccundoSummary(toolUses) {
   return ''
 }
 
+// 当前正在请求的 sessionId, 防止快速切换导致旧请求覆盖新数据
+let _refreshToken = 0
 async function refreshCcundoStates(sessionId) {
   if (!ccundoAvailable.value || !sessionId) return
+  const myToken = ++_refreshToken
   try {
     const r = await ccundoOperations(sessionId)
+    // 若期间用户已切换 session, 丢弃此次结果
+    if (myToken !== _refreshToken) return
+    if (sessionStore.selectedId !== sessionId) return
     if (r && r.states) {
       ccundoStates.value = { ...r.states }
     }
@@ -555,6 +561,18 @@ const _CCUNDO_TRACKED = new Set(['Edit', 'MultiEdit', 'Write', 'NotebookEdit', '
 
 function isCcundoTracked(op) {
   return _CCUNDO_TRACKED.has(op.type)
+}
+
+function toolUsesHeader(toolUses) {
+  const total = toolUses.length
+  const tracked = toolUses.filter(o => _CCUNDO_TRACKED.has(o.type)).length
+  if (tracked === total) return `${total} 个工具调用`
+  return `${total} 个工具调用 (${tracked} 个可撤销)`
+}
+
+function opTooltip(op) {
+  // 优先完整路径; 没有 file_path 就显示完整 summary (避免 basename 截断)
+  return op.file_path || op.summary
 }
 
 function buildCascadePreview(op, action) {
