@@ -367,6 +367,55 @@
               </div>
               <pre v-if="turn.has_refusal && turn.matched_keywords && turn.matched_keywords.length" class="turn-content refusal" v-html="highlightKeywords(turn.content, turn.matched_keywords)"></pre>
               <pre v-else class="turn-content" :class="{ refusal: turn.has_refusal }">{{ turn.content }}</pre>
+
+              <!-- 工具调用折叠面板 (ccundo 集成) -->
+              <div v-if="turn.tool_uses && turn.tool_uses.length" class="tool-uses-wrapper">
+                <div class="tool-uses-header" @click="toggleToolUses(turn.line_num)">
+                  <span class="tool-uses-chevron">{{ expandedToolTurns.has(turn.line_num) ? '▼' : '▶' }}</span>
+                  <span class="tool-uses-icon">🔧</span>
+                  <span>{{ turn.tool_uses.length }} {{ $t('preview.toolUses') || '个文件操作' }}</span>
+                  <span v-if="ccundoSummary(turn.tool_uses)" class="tool-uses-summary">
+                    {{ ccundoSummary(turn.tool_uses) }}
+                  </span>
+                </div>
+                <div v-if="expandedToolTurns.has(turn.line_num)" class="tool-uses-list">
+                  <div
+                    v-for="op in turn.tool_uses"
+                    :key="op.id"
+                    class="tool-use-card"
+                    :class="opState(op).toLowerCase()"
+                  >
+                    <span class="op-icon">{{ opIcon(op.type) }}</span>
+                    <span class="op-type">{{ op.type }}</span>
+                    <span class="op-summary" :title="op.summary">{{ op.summary }}</span>
+                    <span v-if="op.is_destructive" class="op-warn" title="不可逆操作">⚠</span>
+                    <span class="op-state-badge" :class="opState(op).toLowerCase()">{{ opStateLabel(op) }}</span>
+                    <n-button
+                      v-if="opState(op) === 'active'"
+                      size="tiny"
+                      type="warning"
+                      :loading="ccundoActing.has(op.id)"
+                      :disabled="!ccundoAvailable"
+                      @click="doCcundo(op, 'undo', turn)"
+                    >
+                      ↶ {{ $t('preview.undo') || 'Undo' }}
+                    </n-button>
+                    <n-button
+                      v-else-if="opState(op) === 'undone'"
+                      size="tiny"
+                      type="primary"
+                      :loading="ccundoActing.has(op.id)"
+                      :disabled="!ccundoAvailable"
+                      @click="doCcundo(op, 'redo', turn)"
+                    >
+                      ↷ {{ $t('preview.redo') || 'Redo' }}
+                    </n-button>
+                  </div>
+                  <div v-if="!ccundoAvailable" class="ccundo-hint">
+                    {{ $t('preview.ccundoMissing') || '未检测到 ccundo, 安装: npm install -g ccundo' }}
+                  </div>
+                </div>
+              </div>
             </div>
           </div>
         </div>
@@ -396,10 +445,11 @@
 </template>
 
 <script setup>
-import { ref, computed, watch } from 'vue'
+import { ref, computed, watch, onMounted } from 'vue'
 import { useI18n } from 'vue-i18n'
 import { CheckmarkCircleOutline, ArrowDownOutline, SwapHorizontalOutline, CodeOutline, InformationCircleOutline, EllipsisHorizontalOutline, ChatbubbleEllipsesOutline, ArrowUndoOutline } from '@vicons/ionicons5'
 import { useSessionStore } from '../stores/sessionStore'
+import { ccundoStatus, ccundoOperations, ccundoAction } from '../services/api'
 
 const { t } = useI18n()
 const sessionStore = useSessionStore()
@@ -431,6 +481,140 @@ const rewriteModal = ref({ show: false, text: '', lineNum: null, sessionId: null
 const pendingLines = ref(new Set())
 const conversationSearch = ref('')
 const debouncedSearch = ref('')
+
+// ─── ccundo 集成 ───
+const ccundoAvailable = ref(false)
+const ccundoStates = ref({})       // {op_id: 'active' | 'undone'}
+const ccundoActing = ref(new Set())  // 进行中的 op_ids
+const expandedToolTurns = ref(new Set())  // 展开的 turn line_num
+
+function toggleToolUses(lineNum) {
+  if (expandedToolTurns.value.has(lineNum)) {
+    expandedToolTurns.value.delete(lineNum)
+  } else {
+    expandedToolTurns.value.add(lineNum)
+  }
+  // trigger reactivity
+  expandedToolTurns.value = new Set(expandedToolTurns.value)
+}
+
+function opIcon(type) {
+  const map = {
+    Edit: '📝', MultiEdit: '📝', Write: '✏️', NotebookEdit: '📓',
+    Read: '👁', Glob: '🔍', Grep: '🔍',
+    Bash: '💻', BashOutput: '💻',
+    WebFetch: '🌐', WebSearch: '🌐',
+    TaskCreate: '📋', TaskUpdate: '📋',
+    Task: '🤖',
+  }
+  return map[type] || '🔧'
+}
+
+function opState(op) {
+  // 优先用 ccundo 实时状态, fallback 到 backend 提供的初始状态
+  return ccundoStates.value[op.id] || op.state || 'active'
+}
+
+function opStateLabel(op) {
+  const s = opState(op)
+  if (s === 'active') return '✓ 生效'
+  if (s === 'undone') return '✗ 已撤销'
+  return s
+}
+
+function ccundoSummary(toolUses) {
+  if (!toolUses || !toolUses.length) return ''
+  let undone = 0
+  for (const op of toolUses) {
+    if (opState(op) === 'undone') undone++
+  }
+  if (undone > 0) return `(${undone} 已撤销)`
+  return ''
+}
+
+async function refreshCcundoStates(sessionId) {
+  if (!ccundoAvailable.value || !sessionId) return
+  try {
+    const r = await ccundoOperations(sessionId)
+    if (r && r.states) {
+      ccundoStates.value = { ...r.states }
+    }
+  } catch (e) {
+    console.warn('ccundo state refresh failed', e)
+  }
+}
+
+function buildCascadePreview(op, action) {
+  // 收集所有 conversation_summary 里的 tool_uses 按时间顺序
+  if (!preview.value || !preview.value.conversation_summary) return []
+  const allOps = []
+  for (const t of preview.value.conversation_summary) {
+    if (t.tool_uses && t.tool_uses.length) {
+      for (const o of t.tool_uses) {
+        allOps.push(o)
+      }
+    }
+  }
+  const targetIdx = allOps.findIndex(x => x.id === op.id)
+  if (targetIdx < 0) return []
+  if (action === 'undo') {
+    // 级联撤销 = 目标及之后所有 active 的操作
+    return allOps.slice(targetIdx).filter(x => opState(x) === 'active')
+  } else {
+    // 级联恢复 = 目标及之前所有 undone 的操作
+    return allOps.slice(0, targetIdx + 1).filter(x => opState(x) === 'undone')
+  }
+}
+
+async function doCcundo(op, action, turn) {
+  if (!sessionStore.selectedId) return
+  const dest = action === 'undo' ? '撤销' : '恢复'
+  const cascade = buildCascadePreview(op, action)
+
+  // 构造确认对话框
+  let msg
+  if (cascade.length <= 1) {
+    msg = `${dest} 操作: ${op.type} ${op.summary}`
+    if (op.is_destructive) {
+      msg += '\n\n⚠ 这是不可逆操作 (Bash/destructive),ccundo 只能标注无法真正还原。'
+    }
+  } else {
+    const list = cascade.slice(0, 10).map(x => `  • ${x.type} ${x.summary.slice(0, 60)}`).join('\n')
+    const more = cascade.length > 10 ? `\n  … 还有 ${cascade.length - 10} 个操作` : ''
+    msg = `${dest}将级联 ${cascade.length} 个操作:\n\n${list}${more}\n\n继续?`
+  }
+  if (!confirm(msg)) return
+
+  ccundoActing.value.add(op.id)
+  ccundoActing.value = new Set(ccundoActing.value)
+  try {
+    const r = await ccundoAction(op.id, action, sessionStore.selectedId)
+    if (r && r.ok) {
+      await refreshCcundoStates(sessionStore.selectedId)
+    } else {
+      alert(`ccundo ${action} 失败: ${(r && (r.stderr || r.error)) || '未知错误'}`)
+    }
+  } finally {
+    ccundoActing.value.delete(op.id)
+    ccundoActing.value = new Set(ccundoActing.value)
+  }
+}
+
+onMounted(async () => {
+  try {
+    const r = await ccundoStatus()
+    ccundoAvailable.value = !!(r && r.available)
+  } catch (e) {
+    ccundoAvailable.value = false
+  }
+})
+
+// 监听 session 切换, 刷新 ccundo 状态
+watch(() => sessionStore.selectedId, async (sid) => {
+  ccundoStates.value = {}
+  expandedToolTurns.value = new Set()
+  if (sid) await refreshCcundoStates(sid)
+})
 let _searchTimer = null
 watch(conversationSearch, (val) => {
   clearTimeout(_searchTimer)
@@ -1187,5 +1371,108 @@ watch(() => sessionStore.selectedId, () => {
   word-break: break-word;
   margin: 0;
   line-height: 1.5;
+}
+
+/* ─── tool_uses 折叠面板 (ccundo) ─── */
+.tool-uses-wrapper {
+  margin-top: 8px;
+  border: 1px solid var(--color-border, #2a2a3e);
+  border-radius: 4px;
+  background: rgba(130, 170, 255, 0.04);
+}
+.tool-uses-header {
+  padding: 6px 10px;
+  font-size: 12px;
+  cursor: pointer;
+  user-select: none;
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  color: var(--color-text-2, #aaa);
+  transition: background 0.15s;
+}
+.tool-uses-header:hover {
+  background: rgba(130, 170, 255, 0.08);
+}
+.tool-uses-chevron {
+  font-size: 10px;
+  width: 10px;
+  display: inline-block;
+}
+.tool-uses-icon {
+  font-size: 13px;
+}
+.tool-uses-summary {
+  margin-left: auto;
+  color: #f5a96d;
+  font-size: 11px;
+}
+.tool-uses-list {
+  padding: 4px 10px 8px 10px;
+  border-top: 1px solid var(--color-border, #2a2a3e);
+}
+.tool-use-card {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 4px 6px;
+  margin: 2px 0;
+  font-size: 12px;
+  border-radius: 3px;
+  background: var(--color-bg-1, #1a1a2e);
+  transition: background 0.15s;
+}
+.tool-use-card:hover {
+  background: rgba(130, 170, 255, 0.06);
+}
+.tool-use-card.undone {
+  opacity: 0.55;
+  font-style: italic;
+}
+.op-icon {
+  font-size: 14px;
+  width: 18px;
+  text-align: center;
+  flex-shrink: 0;
+}
+.op-type {
+  color: #82aaff;
+  font-weight: 600;
+  width: 70px;
+  flex-shrink: 0;
+}
+.op-summary {
+  flex: 1;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  color: var(--color-text-1, #ccc);
+  font-family: ui-monospace, monospace;
+  font-size: 11px;
+}
+.op-warn {
+  color: #f5a96d;
+  flex-shrink: 0;
+}
+.op-state-badge {
+  font-size: 10px;
+  padding: 1px 6px;
+  border-radius: 3px;
+  flex-shrink: 0;
+}
+.op-state-badge.active {
+  background: rgba(99, 230, 99, 0.15);
+  color: #63e663;
+}
+.op-state-badge.undone {
+  background: rgba(245, 169, 109, 0.15);
+  color: #f5a96d;
+}
+.ccundo-hint {
+  padding: 6px;
+  font-size: 11px;
+  color: #f5a96d;
+  text-align: center;
+  font-style: italic;
 }
 </style>

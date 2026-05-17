@@ -61,6 +61,16 @@ class DiffItem(BaseModel):
     after: str
 
 
+class ToolUseBlock(BaseModel):
+    """工具调用块（Edit/Write/Bash 等），用于 ccundo 集成"""
+    id: str                          # toolu_xxx，ccundo 用此 ID 定位
+    type: str                        # 'Edit' | 'Write' | 'Bash' | 'Read' | 'Glob' | ...
+    summary: str                     # 简短描述：'auth.js' / 'npm install express'
+    file_path: Optional[str] = None  # 文件类操作的路径
+    is_destructive: bool = False     # Bash 等不可逆操作
+    state: str = "active"            # 'active' | 'undone' | 'unsupported'
+
+
 class ConversationTurn(BaseModel):
     """对话摘要条目"""
     role: str           # "user" | "assistant"
@@ -69,6 +79,7 @@ class ConversationTurn(BaseModel):
     line_num: int       # 原始行号
     has_refusal: bool = False  # 是否包含拒绝
     matched_keywords: List[str] = []  # 匹配到的拒绝关键字
+    tool_uses: List[ToolUseBlock] = []  # 该 turn 中的工具调用
 
 
 class PreviewResponse(BaseModel):

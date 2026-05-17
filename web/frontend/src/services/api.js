@@ -203,6 +203,22 @@ export async function updateSettings(settings) {
   })
 }
 
+// ccundo 集成 (文件操作 undo/redo)
+export async function ccundoStatus() {
+  return request('/ccundo/status')
+}
+
+export async function ccundoOperations(sessionId) {
+  return request(`/ccundo/operations/${sessionId}`)
+}
+
+export async function ccundoAction(opId, action, sessionId) {
+  return request('/ccundo/action', {
+    method: 'POST',
+    body: JSON.stringify({ op_id: opId, action, session_id: sessionId }),
+  })
+}
+
 // 实时监控
 export async function startMonitor() {
   return request('/monitor/start', { method: 'POST' })

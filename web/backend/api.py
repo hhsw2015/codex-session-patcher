@@ -23,10 +23,63 @@ from .schemas import (
     PatchResponse, Settings, ChangeDetail, ChangeType, WSMessage,
     AIRewriteResponse, PatchRequest, BackupInfo, RestoreResponse, DiffItem,
     CTFStatusResponse, CTFInstallResponse, PromptRewriteRequest, PromptRewriteResponse,
-    ConversationTurn,
+    ConversationTurn, ToolUseBlock,
     DeleteMessagesRequest, DeleteMessagesResponse, ScanSessionResponse,
     SingleRewriteRequest, SingleRewriteResponse, GroupActionRequest,
 )
+
+
+# ═══════════════════════════════════════════════════════════════════════
+#  Tool use 提取 (用于 ccundo 集成)
+# ═══════════════════════════════════════════════════════════════════════
+
+# 不可逆操作类型 (Bash 默认不可逆, 其他工具按需扩展)
+_DESTRUCTIVE_TOOLS = {"Bash", "BashOutput"}
+
+# 文件操作类型 (有明确 file_path)
+_FILE_TOOLS = {"Edit", "Write", "Read", "NotebookEdit", "MultiEdit"}
+
+
+def _extract_tool_uses_from_message(line: dict) -> list[ToolUseBlock]:
+    """从单条 assistant message 提取 tool_use 块列表"""
+    blocks: list[ToolUseBlock] = []
+    line_type = line.get("type", "")
+
+    # Claude Code 格式: type='assistant', message.content 是 list
+    if line_type == "assistant":
+        msg = line.get("message", {})
+        content = msg.get("content", [])
+        if not isinstance(content, list):
+            return blocks
+        for item in content:
+            if not isinstance(item, dict) or item.get("type") != "tool_use":
+                continue
+            tool_id = item.get("id", "")
+            tool_name = item.get("name", "")
+            inp = item.get("input", {}) or {}
+
+            file_path = inp.get("file_path") if isinstance(inp, dict) else None
+            if tool_name in _FILE_TOOLS and file_path:
+                summary = os.path.basename(file_path)
+            elif tool_name == "Bash":
+                cmd = inp.get("command", "") if isinstance(inp, dict) else ""
+                summary = cmd[:80] + ("..." if len(cmd) > 80 else "")
+            elif tool_name == "Glob":
+                summary = inp.get("pattern", "") if isinstance(inp, dict) else ""
+            elif tool_name == "WebFetch":
+                summary = inp.get("url", "") if isinstance(inp, dict) else ""
+            else:
+                summary = tool_name
+
+            blocks.append(ToolUseBlock(
+                id=tool_id,
+                type=tool_name,
+                summary=summary or tool_name,
+                file_path=file_path,
+                is_destructive=(tool_name in _DESTRUCTIVE_TOOLS),
+                state="active",  # 默认 active, 后续合并 ccundo 状态
+            ))
+    return blocks
 
 from codex_session_patcher.core import (
     RefusalDetector,
@@ -600,7 +653,11 @@ def preview_session(file_path: str, mock_response: str = MOCK_RESPONSE,
                 texts = [item.get('text', '') for item in content if isinstance(item, dict)]
                 content = '\n'.join(texts)
 
-        if role and content:
+        # 提取 tool_uses (仅 assistant)
+        tool_uses = _extract_tool_uses_from_message(line) if role == "assistant" else []
+
+        # 有文本内容 OR 有 tool_uses 都要保留 (纯工具调用的 turn 也要显示, 用于撤销)
+        if role and (content or tool_uses):
             truncated = content[:200] + ('...' if len(content) > 200 else '')
             search_text = content[:1000]
             conversation_summary.append(ConversationTurn(
@@ -610,6 +667,7 @@ def preview_session(file_path: str, mock_response: str = MOCK_RESPONSE,
                 line_num=idx + 1,
                 has_refusal=idx in refusal_lines,
                 matched_keywords=refusal_keywords_map.get(idx, []),
+                tool_uses=tool_uses,
             ))
 
     # 统计推理内容（Codex 格式独立行）
@@ -2249,3 +2307,84 @@ async def monitor_status():
         "available": _session_watcher is not None,
         "running": _session_watcher.is_running if _session_watcher else False,
     }
+
+
+# ═══════════════════════════════════════════════════════════════════════
+#  ccundo 集成 (文件操作的 undo/redo)
+# ═══════════════════════════════════════════════════════════════════════
+
+from pydantic import BaseModel
+from . import ccundo as _ccundo
+
+
+def _resolve_session_cwd(session_id: str) -> Optional[str]:
+    """从 session_id 解析出对应项目的 cwd。
+
+    优先从 JSONL 第一行读 cwd 字段 (Claude Code 格式),
+    fallback 到 list_sessions 的 project_path (可能不准)。
+    """
+    try:
+        sessions = list_sessions(skip_refusal_check=True, scan_mode="cached")
+    except Exception:
+        return None
+    matched = None
+    for s in sessions:
+        if s.id == session_id or s.filename.startswith(session_id):
+            matched = s
+            break
+    if not matched:
+        return None
+    # 从 JSONL 前几行扫 cwd 字段 (Claude Code session 通常在前几条记录里)
+    try:
+        with open(matched.path, encoding="utf-8") as f:
+            for i, line in enumerate(f):
+                if i > 20:
+                    break
+                if not line.strip():
+                    continue
+                try:
+                    d = json.loads(line)
+                except json.JSONDecodeError:
+                    continue
+                cwd = d.get("cwd")
+                if cwd:
+                    return cwd
+    except Exception:
+        pass
+    return getattr(matched, "project_path", None)
+
+
+@router.get("/ccundo/status")
+async def ccundo_status():
+    """检测 ccundo 是否可用。"""
+    return {"available": _ccundo.is_available()}
+
+
+@router.get("/ccundo/operations/{session_id}")
+async def ccundo_operations(session_id: str):
+    """返回 session 中所有 tool 操作的 ccundo 状态映射。"""
+    if not _ccundo.is_available():
+        return {"available": False, "states": {}}
+    cwd = _resolve_session_cwd(session_id)
+    if not cwd:
+        return {"available": True, "states": {}, "error": "session cwd not found"}
+    states = _ccundo.list_operations(cwd, session_id=session_id)
+    return {"available": True, "states": states}
+
+
+class CcundoActionRequest(BaseModel):
+    op_id: str
+    action: str  # 'undo' | 'redo'
+    session_id: str
+
+
+@router.post("/ccundo/action")
+async def ccundo_action(req: CcundoActionRequest):
+    """执行 undo 或 redo (ccundo 默认级联)。"""
+    if not _ccundo.is_available():
+        return {"ok": False, "error": "ccundo not installed (npm install -g ccundo)"}
+    cwd = _resolve_session_cwd(req.session_id)
+    if not cwd:
+        return {"ok": False, "error": "session cwd not found"}
+    result = _ccundo.run_action(cwd, req.op_id, req.action, session_id=req.session_id)
+    return result
