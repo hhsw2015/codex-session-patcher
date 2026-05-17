@@ -62,13 +62,16 @@ class DiffItem(BaseModel):
 
 
 class ToolUseBlock(BaseModel):
-    """工具调用块（Edit/Write/Bash 等），用于 ccundo 集成"""
+    """工具调用块（Edit/Write/Bash 等），用于 ccundo 集成。
+
+    state 字段不在此处返回 -- 实时状态由前端通过 /ccundo/operations 接口
+    单独获取后合并显示，避免每次 preview 都触发 ccundo 子进程调用。
+    """
     id: str                          # toolu_xxx，ccundo 用此 ID 定位
     type: str                        # 'Edit' | 'Write' | 'Bash' | 'Read' | 'Glob' | ...
     summary: str                     # 简短描述：'auth.js' / 'npm install express'
     file_path: Optional[str] = None  # 文件类操作的路径
     is_destructive: bool = False     # Bash 等不可逆操作
-    state: str = "active"            # 'active' | 'undone' | 'unsupported'
 
 
 class ConversationTurn(BaseModel):

@@ -18,6 +18,9 @@ from fastapi.responses import JSONResponse
 import sqlite3
 import time as _time
 
+from pydantic import BaseModel
+
+from . import ccundo as _ccundo
 from .schemas import (
     Session, SessionListResponse, SessionFormatEnum, PreviewResponse,
     PatchResponse, Settings, ChangeDetail, ChangeType, WSMessage,
@@ -77,7 +80,6 @@ def _extract_tool_uses_from_message(line: dict) -> list[ToolUseBlock]:
                 summary=summary or tool_name,
                 file_path=file_path,
                 is_destructive=(tool_name in _DESTRUCTIVE_TOOLS),
-                state="active",  # 默认 active, 后续合并 ccundo 状态
             ))
     return blocks
 
@@ -2312,9 +2314,6 @@ async def monitor_status():
 # ═══════════════════════════════════════════════════════════════════════
 #  ccundo 集成 (文件操作的 undo/redo)
 # ═══════════════════════════════════════════════════════════════════════
-
-from pydantic import BaseModel
-from . import ccundo as _ccundo
 
 
 def _resolve_session_cwd(session_id: str) -> Optional[str]:

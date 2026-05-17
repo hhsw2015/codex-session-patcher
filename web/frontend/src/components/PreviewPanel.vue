@@ -396,7 +396,7 @@
                       type="warning"
                       :loading="ccundoActing.has(op.id)"
                       :disabled="!ccundoAvailable"
-                      @click="doCcundo(op, 'undo', turn)"
+                      @click="doCcundo(op, 'undo')"
                     >
                       ↶ {{ $t('preview.undo') || 'Undo' }}
                     </n-button>
@@ -406,7 +406,7 @@
                       type="primary"
                       :loading="ccundoActing.has(op.id)"
                       :disabled="!ccundoAvailable"
-                      @click="doCcundo(op, 'redo', turn)"
+                      @click="doCcundo(op, 'redo')"
                     >
                       ↷ {{ $t('preview.redo') || 'Redo' }}
                     </n-button>
@@ -449,10 +449,13 @@ import { ref, computed, watch, onMounted } from 'vue'
 import { useI18n } from 'vue-i18n'
 import { CheckmarkCircleOutline, ArrowDownOutline, SwapHorizontalOutline, CodeOutline, InformationCircleOutline, EllipsisHorizontalOutline, ChatbubbleEllipsesOutline, ArrowUndoOutline } from '@vicons/ionicons5'
 import { useSessionStore } from '../stores/sessionStore'
+import { useDialog, useMessage } from 'naive-ui'
 import { ccundoStatus, ccundoOperations, ccundoAction } from '../services/api'
 
 const { t } = useI18n()
 const sessionStore = useSessionStore()
+const dialog = useDialog()
+const message = useMessage()
 const activeTab = ref('changes')
 
 // 接收 cleanReasoning prop
@@ -511,8 +514,8 @@ function opIcon(type) {
 }
 
 function opState(op) {
-  // 优先用 ccundo 实时状态, fallback 到 backend 提供的初始状态
-  return ccundoStates.value[op.id] || op.state || 'active'
+  // 状态由 /ccundo/operations 单独获取并合并; 缺省视为 active
+  return ccundoStates.value[op.id] || 'active'
 }
 
 function opStateLabel(op) {
@@ -544,60 +547,69 @@ async function refreshCcundoStates(sessionId) {
   }
 }
 
+// ccundo 实际跟踪的工具类型 (其他类型不会被级联,过滤掉)
+const _CCUNDO_TRACKED = new Set(['Edit', 'MultiEdit', 'Write', 'NotebookEdit', 'Bash'])
+
 function buildCascadePreview(op, action) {
-  // 收集所有 conversation_summary 里的 tool_uses 按时间顺序
   if (!preview.value || !preview.value.conversation_summary) return []
   const allOps = []
   for (const t of preview.value.conversation_summary) {
     if (t.tool_uses && t.tool_uses.length) {
       for (const o of t.tool_uses) {
-        allOps.push(o)
+        if (_CCUNDO_TRACKED.has(o.type)) allOps.push(o)
       }
     }
   }
   const targetIdx = allOps.findIndex(x => x.id === op.id)
-  if (targetIdx < 0) return []
+  if (targetIdx < 0) return [op]
   if (action === 'undo') {
-    // 级联撤销 = 目标及之后所有 active 的操作
     return allOps.slice(targetIdx).filter(x => opState(x) === 'active')
   } else {
-    // 级联恢复 = 目标及之前所有 undone 的操作
     return allOps.slice(0, targetIdx + 1).filter(x => opState(x) === 'undone')
   }
 }
 
-async function doCcundo(op, action, turn) {
+async function doCcundo(op, action) {
   if (!sessionStore.selectedId) return
-  const dest = action === 'undo' ? '撤销' : '恢复'
+  const dest = action === 'undo' ? t('preview.undo') || 'Undo' : t('preview.redo') || 'Redo'
   const cascade = buildCascadePreview(op, action)
 
-  // 构造确认对话框
-  let msg
+  let title, content
   if (cascade.length <= 1) {
-    msg = `${dest} 操作: ${op.type} ${op.summary}`
+    title = `${dest}: ${op.type}`
+    content = op.summary
     if (op.is_destructive) {
-      msg += '\n\n⚠ 这是不可逆操作 (Bash/destructive),ccundo 只能标注无法真正还原。'
+      content += '\n\n⚠ 不可逆操作,ccundo 仅标记状态,无法真正还原副作用。'
     }
   } else {
-    const list = cascade.slice(0, 10).map(x => `  • ${x.type} ${x.summary.slice(0, 60)}`).join('\n')
-    const more = cascade.length > 10 ? `\n  … 还有 ${cascade.length - 10} 个操作` : ''
-    msg = `${dest}将级联 ${cascade.length} 个操作:\n\n${list}${more}\n\n继续?`
+    const list = cascade.slice(0, 10).map(x => `• ${x.type}  ${x.summary.slice(0, 60)}`).join('\n')
+    const more = cascade.length > 10 ? `\n… 还有 ${cascade.length - 10} 个` : ''
+    title = `${dest} 将级联 ${cascade.length} 个操作`
+    content = list + more
   }
-  if (!confirm(msg)) return
 
-  ccundoActing.value.add(op.id)
-  ccundoActing.value = new Set(ccundoActing.value)
-  try {
-    const r = await ccundoAction(op.id, action, sessionStore.selectedId)
-    if (r && r.ok) {
-      await refreshCcundoStates(sessionStore.selectedId)
-    } else {
-      alert(`ccundo ${action} 失败: ${(r && (r.stderr || r.error)) || '未知错误'}`)
-    }
-  } finally {
-    ccundoActing.value.delete(op.id)
-    ccundoActing.value = new Set(ccundoActing.value)
-  }
+  dialog.warning({
+    title,
+    content,
+    positiveText: dest,
+    negativeText: t('common.cancel') || '取消',
+    onPositiveClick: async () => {
+      ccundoActing.value.add(op.id)
+      ccundoActing.value = new Set(ccundoActing.value)
+      try {
+        const r = await ccundoAction(op.id, action, sessionStore.selectedId)
+        if (r && r.ok) {
+          await refreshCcundoStates(sessionStore.selectedId)
+          message.success(`${dest} ✓`)
+        } else {
+          message.error(`${dest} 失败: ${(r && (r.stderr || r.error)) || '未知错误'}`)
+        }
+      } finally {
+        ccundoActing.value.delete(op.id)
+        ccundoActing.value = new Set(ccundoActing.value)
+      }
+    },
+  })
 }
 
 onMounted(async () => {
