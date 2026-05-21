@@ -1675,7 +1675,6 @@ def scan_new_restrictions(data: bytes) -> list:
 
     返回 [{text, category, offset}] 列表。
     """
-    import re as _re
     findings = []
 
     # ── 模式 1: 显式拒绝动词 + 安全/攻击关键词 ──
@@ -1696,7 +1695,7 @@ def scan_new_restrictions(data: bytes) -> list:
         # malicious purpose 限定 (模型被告知不要协助恶意目的)
         ("malicious-restrict",
          rb"(?:for malicious purposes?|malicious intent|malicious use)[^\"]{0,50}"
-         rb"(?:refuse|Refuse|NEVER|never|must not|do not|decline|block)[^\"]{5,100}"),
+         rb"(?:refuse|Refuse|NEVER|never|must not|do not|decline|block)[^\"]{0,100}"),
         # dual-use 限制 (要求授权才能做)
         ("dual-use-gate",
          rb"(?:Dual.use|dual.use)[^\"]{0,30}"
@@ -1724,7 +1723,7 @@ def scan_new_restrictions(data: bytes) -> list:
     ]
 
     for category, pattern in cyber_patterns:
-        for m in _re.finditer(pattern, data):
+        for m in re.finditer(pattern, data):
             offset = m.start()
             raw = m.group(0)[:250]
             txt = raw.decode(errors="replace")
@@ -1760,22 +1759,24 @@ def scan_new_restrictions(data: bytes) -> list:
         b"not able to provide", b"not able to assist",
     ]
     for template in refusal_templates:
-        for m in _re.finditer(_re.escape(template), data):
+        for m in re.finditer(re.escape(template), data):
             offset = m.start()
-            # 只看嵌在 prompt 字符串中的 (前后有引号或反引号)
-            ctx = data[max(0, offset - 50):offset + len(template) + 50]
+            # 取 match 前 15 字节 + 后 15 字节 (覆盖嵌套在字符串中的情况)
+            pre = data[max(0, offset - 15):offset]
+            post = data[offset + len(template):offset + len(template) + 15]
+            nearby = pre + post
             # 排除空格覆盖区
-            if b"                " in ctx[:30]:
+            if b"                " in data[max(0, offset - 20):offset]:
                 continue
-            # 排除 detector.py / Python 代码内容
-            if b"STRONG_REFUSAL" in ctx or b"WEAK_REFUSAL" in ctx or b"#" in ctx[:5]:
+            # 排除 Python 源码中的字符串 (detector.py 等)
+            ctx = data[max(0, offset - 100):offset + len(template) + 100]
+            if b"STRONG_REFUSAL" in ctx or b"WEAK_REFUSAL" in ctx:
                 continue
-            # 排除已知的用户自己的 override.md 内容
+            # 排除 override.md 内容 ("Never say I can't...")
             if b"Never say" in ctx:
                 continue
-            # 只保留看起来像 system prompt 指令的 (前后有 quote)
-            txt = ctx.decode(errors="replace")
-            if any(c in txt[:10] for c in ['"', "'", "`", ":", "."]):
+            # 只保留嵌在字符串常量中的 (紧邻引号/反引号)
+            if any(c in nearby for c in [ord('"'), ord("'"), ord("`")]):
                 findings.append({
                     "text": template.decode() + " (模型被教导使用此拒绝话术)",
                     "category": "refusal-template",
