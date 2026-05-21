@@ -1705,7 +1705,7 @@ def scan_new_restrictions(data: bytes) -> list:
         ("attack-restrict",
          rb"(?:DoS attacks?|supply chain compromise|mass targeting|detection evasion|"
          rb"social engineering|spear.?phish|credential.?attack|privilege.?escalation)"
-         rb"[^\"]{0,50}(?:refuse|Refuse|NEVER|never|must not|block|prohibit)[^\"]{5,100}"),
+         rb"[^\"]{0,80}(?:refuse|Refuse|NEVER|never|must not|block|prohibit)[^\"]{0,100}"),
     ]
 
     # ── 排除规则 (防误报) ──
@@ -1748,6 +1748,40 @@ def scan_new_restrictions(data: bytes) -> list:
                 "category": category,
                 "offset": offset,
             })
+
+    # ── 模式 2: 系统提示词中出现拒绝话术模板 ──
+    # (如果 binary 中有指示模型说 "I cannot assist" 这类话术 = 教模型拒绝)
+    refusal_templates = [
+        # 英文拒绝话术 (嵌在 system prompt 中 = 教模型这样回复)
+        b"I cannot assist", b"I can't assist", b"I'm unable to assist",
+        b"I cannot help", b"I can't help", b"I must decline",
+        b"I must refuse", b"against my guidelines", b"against my policy",
+        b"I won't help", b"I won't assist",
+        b"not able to provide", b"not able to assist",
+    ]
+    for template in refusal_templates:
+        for m in _re.finditer(_re.escape(template), data):
+            offset = m.start()
+            # 只看嵌在 prompt 字符串中的 (前后有引号或反引号)
+            ctx = data[max(0, offset - 50):offset + len(template) + 50]
+            # 排除空格覆盖区
+            if b"                " in ctx[:30]:
+                continue
+            # 排除 detector.py / Python 代码内容
+            if b"STRONG_REFUSAL" in ctx or b"WEAK_REFUSAL" in ctx or b"#" in ctx[:5]:
+                continue
+            # 排除已知的用户自己的 override.md 内容
+            if b"Never say" in ctx:
+                continue
+            # 只保留看起来像 system prompt 指令的 (前后有 quote)
+            txt = ctx.decode(errors="replace")
+            if any(c in txt[:10] for c in ['"', "'", "`", ":", "."]):
+                findings.append({
+                    "text": template.decode() + " (模型被教导使用此拒绝话术)",
+                    "category": "refusal-template",
+                    "offset": offset,
+                })
+                break  # 每个 template 只报一次
 
     # 去重
     seen = set()
