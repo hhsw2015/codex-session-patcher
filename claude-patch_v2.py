@@ -1670,12 +1670,27 @@ def scan_new_restrictions(data: bytes) -> list:
 
     设计原则:
     - 精准: 只报模型被指示拒绝用户的安全/渗透/攻击类请求
-    - 排除: 用户保护(command injection检测)、编码规范、技术限制、security-review工具模板
+    - 排除: 已有 patch 覆盖区域、用户保护机制、security-review 工具模板
     - 全面: 覆盖 refuse/decline/NEVER + 安全关键词组合
 
     返回 [{text, category, offset}] 列表。
     """
     findings = []
+
+    # 计算已有 patch 会覆盖的区间, 用于排除"已知会被 patch"的发现
+    try:
+        existing_locations = find_all_patch_locations(data)
+    except Exception:
+        existing_locations = []
+    patched_ranges = [(loc["offset"], loc["offset"] + loc["length"]) for loc in existing_locations]
+
+    def in_existing_patch(offset, length):
+        end = offset + length
+        for ps, pe in patched_ranges:
+            # 重叠判定: 任何区间相交都算
+            if offset < pe and end > ps:
+                return True
+        return False
 
     # ── 模式 1: 显式拒绝动词 + 安全/攻击关键词 ──
     cyber_patterns = [
@@ -1728,6 +1743,10 @@ def scan_new_restrictions(data: bytes) -> list:
             raw = m.group(0)[:250]
             txt = raw.decode(errors="replace")
 
+            # 排除已被现有 patch 覆盖的区域 (--apply 时会处理掉)
+            if in_existing_patch(offset, len(raw)):
+                continue
+
             # 排除已 patch 区域 (16+ 连续空格 = 被覆盖)
             if b"                " in raw[:30]:
                 continue
@@ -1761,6 +1780,9 @@ def scan_new_restrictions(data: bytes) -> list:
     for template in refusal_templates:
         for m in re.finditer(re.escape(template), data):
             offset = m.start()
+            # 排除已被现有 patch 覆盖的区域
+            if in_existing_patch(offset, len(template)):
+                continue
             # 取 match 前 15 字节 + 后 15 字节 (覆盖嵌套在字符串中的情况)
             pre = data[max(0, offset - 15):offset]
             post = data[offset + len(template):offset + len(template) + 15]
