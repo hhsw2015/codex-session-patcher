@@ -673,6 +673,7 @@ find_real_binary() {{
 REAL_CLAUDE="$(find_real_binary)" || {{ echo "Error: claude binary not found" >&2; exit 127; }}
 
 export CLAUDE_CODE_WORKFLOWS=1
+export DISABLE_GROWTHBOOK=1
 
 if [[ "$1" == "install" || "$1" == "update" ]]; then
     "$REAL_CLAUDE" --model "opus[1m]" "$@"
