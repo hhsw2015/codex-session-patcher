@@ -672,6 +672,8 @@ find_real_binary() {{
 
 REAL_CLAUDE="$(find_real_binary)" || {{ echo "Error: claude binary not found" >&2; exit 127; }}
 
+export CLAUDE_CODE_WORKFLOWS=1
+
 if [[ "$1" == "install" || "$1" == "update" ]]; then
     "$REAL_CLAUDE" --model "opus[1m]" "$@"
     _rc=$?
@@ -1668,17 +1670,42 @@ def cleanup_old_baks(current_exe: str) -> list:
 
 
 _REFUSAL_VERBS = [
-    "Refuse requests", "Decline requests", "Reject requests",
-    "NEVER help", "NEVER assist", "NEVER provide", "NEVER write",
-    "NEVER create", "NEVER generate",
-    "must not help", "must not assist",
-    "do not help", "do not assist",
+    "Refuse requests",
+    "Decline requests",
+    "Reject requests",
+    "NEVER help",
+    "NEVER assist",
+    "NEVER provide",
+    "NEVER write",
+    "NEVER create",
+    "NEVER generate",
+    "must not help",
+    "must not assist",
+    "do not help",
+    "do not assist",
 ]
 _CYBER_CONTEXT = [
-    "malware", "exploit", "attack", "DoS", "supply chain", "malicious",
-    "C2 framework", "credential", "evasion", "hack", "weapon",
-    "rootkit", "keylogger", "RAT", "botnet", "shellcode", "phishing",
-    "ransomware", "trojan", "zero-day", "0day",
+    "malware",
+    "exploit",
+    "attack",
+    "DoS",
+    "supply chain",
+    "malicious",
+    "C2 framework",
+    "credential",
+    "evasion",
+    "hack",
+    "weapon",
+    "rootkit",
+    "keylogger",
+    "RAT",
+    "botnet",
+    "shellcode",
+    "phishing",
+    "ransomware",
+    "trojan",
+    "zero-day",
+    "0day",
 ]
 
 
@@ -1694,10 +1721,16 @@ def _fetch_phistory_prompt(version: str) -> str:
     """从 phistory GitHub 获取指定版本的 system prompt, 失败返回 None"""
     try:
         r = subprocess.run(
-            ["gh", "api",
-             f"repos/WEIFENG2333/phistory/contents/captures/claude-code/{version}/prompt.md",
-             "--jq", ".content"],
-            capture_output=True, text=True, timeout=8,
+            [
+                "gh",
+                "api",
+                f"repos/WEIFENG2333/phistory/contents/captures/claude-code/{version}/prompt.md",
+                "--jq",
+                ".content",
+            ],
+            capture_output=True,
+            text=True,
+            timeout=8,
         )
         if r.returncode == 0 and r.stdout.strip():
             return base64.b64decode(r.stdout.strip()).decode("utf-8", errors="replace")
@@ -1709,7 +1742,9 @@ def _fetch_phistory_prompt(version: str) -> str:
 def _extract_cyber_sentences(prompt_text: str) -> list:
     """从 system prompt 中提取所有 cyber/refusal 句子"""
     sentences = re.split(r"(?<=[.!])\s+|\n", prompt_text)
-    return [s.strip() for s in sentences if len(s.strip()) >= 20 and _is_cyber_refusal(s)]
+    return [
+        s.strip() for s in sentences if len(s.strip()) >= 20 and _is_cyber_refusal(s)
+    ]
 
 
 def _verify_against_reference(version: str, data: bytes) -> list:
@@ -1777,7 +1812,9 @@ def scan_new_restrictions(data: bytes) -> list:
         existing_locations = find_all_patch_locations(data)
     except Exception:
         existing_locations = []
-    patched_ranges = [(loc["offset"], loc["offset"] + loc["length"]) for loc in existing_locations]
+    patched_ranges = [
+        (loc["offset"], loc["offset"] + loc["length"]) for loc in existing_locations
+    ]
 
     def in_existing_patch(offset, length):
         end = offset + length
@@ -1790,45 +1827,57 @@ def scan_new_restrictions(data: bytes) -> list:
     # ── 模式 1: 显式拒绝动词 + 安全/攻击关键词 ──
     cyber_patterns = [
         # "Refuse requests for X" 是最核心的 CYBER_RISK 格式
-        ("refuse-request",
-         rb"(?:Refuse|Decline|Reject)\s+(?:requests?|to\s+(?:help|assist|provide|generate|create|write))\s+[^\"]{5,250}"),
+        (
+            "refuse-request",
+            rb"(?:Refuse|Decline|Reject)\s+(?:requests?|to\s+(?:help|assist|provide|generate|create|write))\s+[^\"]{5,250}",
+        ),
         # "NEVER help/assist/provide/write" + 安全关键词
-        ("never-assist-cyber",
-         rb"(?:NEVER|never|Do not|do not|Must not|must not)\s+"
-         rb"(?:help|assist|provide|write|create|generate|produce|enable|facilitate)\s+[^\"]{0,40}"
-         rb"(?:malware|exploit|hack|attack|weapon|rootkit|keylogger|RAT|botnet|shellcode|"
-         rb"C2|phishing|ransomware|trojan|virus|worm|spyware|backdoor|0day|zero.day)[^\"]{0,100}"),
+        (
+            "never-assist-cyber",
+            rb"(?:NEVER|never|Do not|do not|Must not|must not)\s+"
+            rb"(?:help|assist|provide|write|create|generate|produce|enable|facilitate)\s+[^\"]{0,40}"
+            rb"(?:malware|exploit|hack|attack|weapon|rootkit|keylogger|RAT|botnet|shellcode|"
+            rb"C2|phishing|ransomware|trojan|virus|worm|spyware|backdoor|0day|zero.day)[^\"]{0,100}",
+        ),
         # "authorized security testing" 限制语境
-        ("cyber-risk-context",
-         rb"(?:Assist with|authorized)\s+(?:security testing|penetration testing|pentest|red.?team)"
-         rb"[^\"]{10,300}(?:Refuse|refuse|NEVER|never|must not|do not)[^\"]{0,100}"),
+        (
+            "cyber-risk-context",
+            rb"(?:Assist with|authorized)\s+(?:security testing|penetration testing|pentest|red.?team)"
+            rb"[^\"]{10,300}(?:Refuse|refuse|NEVER|never|must not|do not)[^\"]{0,100}",
+        ),
         # malicious purpose 限定 (模型被告知不要协助恶意目的)
-        ("malicious-restrict",
-         rb"(?:for malicious purposes?|malicious intent|malicious use)[^\"]{0,50}"
-         rb"(?:refuse|Refuse|NEVER|never|must not|do not|decline|block)[^\"]{0,100}"),
+        (
+            "malicious-restrict",
+            rb"(?:for malicious purposes?|malicious intent|malicious use)[^\"]{0,50}"
+            rb"(?:refuse|Refuse|NEVER|never|must not|do not|decline|block)[^\"]{0,100}",
+        ),
         # dual-use 限制 (要求授权才能做)
-        ("dual-use-gate",
-         rb"(?:Dual.use|dual.use)[^\"]{0,30}"
-         rb"(?:require|only.{0,10}authorized|must.{0,10}confirm|need.{0,10}authorization)[^\"]{0,150}"),
+        (
+            "dual-use-gate",
+            rb"(?:Dual.use|dual.use)[^\"]{0,30}"
+            rb"(?:require|only.{0,10}authorized|must.{0,10}confirm|need.{0,10}authorization)[^\"]{0,150}",
+        ),
         # 攻击类工具限制 (DoS, supply chain, mass targeting)
-        ("attack-restrict",
-         rb"(?:DoS attacks?|supply chain compromise|mass targeting|detection evasion|"
-         rb"social engineering|spear.?phish|credential.?attack|privilege.?escalation)"
-         rb"[^\"]{0,80}(?:refuse|Refuse|NEVER|never|must not|block|prohibit)[^\"]{0,100}"),
+        (
+            "attack-restrict",
+            rb"(?:DoS attacks?|supply chain compromise|mass targeting|detection evasion|"
+            rb"social engineering|spear.?phish|credential.?attack|privilege.?escalation)"
+            rb"[^\"]{0,80}(?:refuse|Refuse|NEVER|never|must not|block|prohibit)[^\"]{0,100}",
+        ),
     ]
 
     # ── 排除规则 (防误报) ──
     # 这些上下文表明是 security-review 工具模板 / 保护用户 / 非拒绝
     exclude_contexts = [
-        b"vulnerability pattern",    # security-review 漏洞评分模板
-        b"EXCLUSIONS",               # security-review 排除规则
+        b"vulnerability pattern",  # security-review 漏洞评分模板
+        b"EXCLUSIONS",  # security-review 排除规则
         b"HARD EXCLUSIONS",
         b"vulnerability score",
-        b"command_injection_detected", # 用户保护机制
+        b"command_injection_detected",  # 用户保护机制
         b"protect the user",
         b"safety system will see",
         b"allowlisting command",
-        b"-----BEGIN CERTIFICATE",   # TLS 证书数据
+        b"-----BEGIN CERTIFICATE",  # TLS 证书数据
         b"-----END CERTIFICATE",
     ]
 
@@ -1852,25 +1901,35 @@ def scan_new_restrictions(data: bytes) -> list:
                 continue
 
             # 排除 security-review 等非拒绝上下文
-            context_window = data[max(0, offset - 200):offset + 300]
+            context_window = data[max(0, offset - 200) : offset + 300]
             if any(exc in context_window for exc in exclude_contexts):
                 continue
 
-            findings.append({
-                "text": txt[:150],
-                "category": category,
-                "offset": offset,
-            })
+            findings.append(
+                {
+                    "text": txt[:150],
+                    "category": category,
+                    "offset": offset,
+                }
+            )
 
     # ── 模式 2: 系统提示词中出现拒绝话术模板 ──
     # (如果 binary 中有指示模型说 "I cannot assist" 这类话术 = 教模型拒绝)
     refusal_templates = [
         # 英文拒绝话术 (嵌在 system prompt 中 = 教模型这样回复)
-        b"I cannot assist", b"I can't assist", b"I'm unable to assist",
-        b"I cannot help", b"I can't help", b"I must decline",
-        b"I must refuse", b"against my guidelines", b"against my policy",
-        b"I won't help", b"I won't assist",
-        b"not able to provide", b"not able to assist",
+        b"I cannot assist",
+        b"I can't assist",
+        b"I'm unable to assist",
+        b"I cannot help",
+        b"I can't help",
+        b"I must decline",
+        b"I must refuse",
+        b"against my guidelines",
+        b"against my policy",
+        b"I won't help",
+        b"I won't assist",
+        b"not able to provide",
+        b"not able to assist",
     ]
     for template in refusal_templates:
         for m in re.finditer(re.escape(template), data):
@@ -1879,14 +1938,14 @@ def scan_new_restrictions(data: bytes) -> list:
             if in_existing_patch(offset, len(template)):
                 continue
             # 取 match 前 15 字节 + 后 15 字节 (覆盖嵌套在字符串中的情况)
-            pre = data[max(0, offset - 15):offset]
-            post = data[offset + len(template):offset + len(template) + 15]
+            pre = data[max(0, offset - 15) : offset]
+            post = data[offset + len(template) : offset + len(template) + 15]
             nearby = pre + post
             # 排除空格覆盖区
-            if b"                " in data[max(0, offset - 20):offset]:
+            if b"                " in data[max(0, offset - 20) : offset]:
                 continue
             # 排除 Python 源码中的字符串 (detector.py 等)
-            ctx = data[max(0, offset - 100):offset + len(template) + 100]
+            ctx = data[max(0, offset - 100) : offset + len(template) + 100]
             if b"STRONG_REFUSAL" in ctx or b"WEAK_REFUSAL" in ctx:
                 continue
             # 排除 override.md 内容 ("Never say I can't...")
@@ -1894,11 +1953,13 @@ def scan_new_restrictions(data: bytes) -> list:
                 continue
             # 只保留嵌在字符串常量中的 (紧邻引号/反引号)
             if any(c in nearby for c in [ord('"'), ord("'"), ord("`")]):
-                findings.append({
-                    "text": template.decode() + " (模型被教导使用此拒绝话术)",
-                    "category": "refusal-template",
-                    "offset": offset,
-                })
+                findings.append(
+                    {
+                        "text": template.decode() + " (模型被教导使用此拒绝话术)",
+                        "category": "refusal-template",
+                        "offset": offset,
+                    }
+                )
                 break  # 每个 template 只报一次
 
     # 去重
@@ -1913,9 +1974,14 @@ def scan_new_restrictions(data: bytes) -> list:
 
 
 _CYBER_VERIFY_KEYWORDS = [
-    "Refuse requests", "destructive techniques", "malicious purposes",
-    "supply chain compromise", "DoS attacks", "C2 frameworks",
-    "detection evasion", "IMPORTANT: Assist with authorized",
+    "Refuse requests",
+    "destructive techniques",
+    "malicious purposes",
+    "supply chain compromise",
+    "DoS attacks",
+    "C2 frameworks",
+    "detection evasion",
+    "IMPORTANT: Assist with authorized",
 ]
 
 
@@ -1932,9 +1998,19 @@ def _ccglass_live_verify():
     # 启动 ccglass + claude 一次性请求
     try:
         r = subprocess.run(
-            ["ccglass", "claude", "--no-open", "--no-mcp", "--",
-             "--no-session-persistence", "-p", "Say OK"],
-            capture_output=True, text=True, timeout=60,
+            [
+                "ccglass",
+                "claude",
+                "--no-open",
+                "--no-mcp",
+                "--",
+                "--no-session-persistence",
+                "-p",
+                "Say OK",
+            ],
+            capture_output=True,
+            text=True,
+            timeout=60,
         )
     except (subprocess.TimeoutExpired, FileNotFoundError):
         print("  \033[33m⚠ ccglass 验证超时或未找到\033[0m")
@@ -1989,11 +2065,15 @@ def _ccglass_live_verify():
         full = " ".join(b.get("text", "") for b in blocks if isinstance(b, dict))
         found = [kw for kw in _CYBER_VERIFY_KEYWORDS if kw in full]
         if found:
-            print(f"  \033[31m✗ API 实际收到的 prompt 仍有残留 ({len(found)} 项):\033[0m")
+            print(
+                f"  \033[31m✗ API 实际收到的 prompt 仍有残留 ({len(found)} 项):\033[0m"
+            )
             for kw in found:
                 print(f"    • {kw}")
         else:
-            print(f"  \033[32m✓ 动态验证通过: API system prompt ({len(full)} chars) 无 cyber/refusal\033[0m")
+            print(
+                f"  \033[32m✓ 动态验证通过: API system prompt ({len(full)} chars) 无 cyber/refusal\033[0m"
+            )
         return
 
     print("  \033[33m⚠ 未找到 system prompt blob\033[0m")
@@ -2083,7 +2163,9 @@ def silent_check():
 
     # ccglass 提示 (不自动跑, 避免消耗 API tokens)
     if applicable == 0 and broken == 0 and shutil.which("ccglass"):
-        print(f"\n\033[36m提示: 可运行 --verify 做 ccglass 动态验证 (确认 API 层面已清理)\033[0m")
+        print(
+            f"\n\033[36m提示: 可运行 --verify 做 ccglass 动态验证 (确认 API 层面已清理)\033[0m"
+        )
 
     if applicable > 0:
         print(f"\n→ 运行 'python3 {sys.argv[0]} --apply' 应用这些 patch")
