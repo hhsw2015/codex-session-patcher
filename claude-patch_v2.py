@@ -1965,33 +1965,32 @@ def silent_check():
         )
         print(f"  建议检查 {script_dir} 是否有更新版本的脚本。")
 
-    # 自动扫描 cyber 拒绝内容 (仅在有 pending/broken 时触发, 省网络)
-    if applicable > 0 or broken > 0:
-        try:
-            with open(state["exe"], "rb") as f:
-                scan_data = f.read()
-            ref_uncovered = _verify_against_reference(state["version"], scan_data)
-            if ref_uncovered:
+    # 自动扫描 cyber 拒绝内容 (每次都跑 -- 检出不在 patch 列表中的新增限制)
+    try:
+        with open(state["exe"], "rb") as f:
+            scan_data = f.read()
+        ref_uncovered = _verify_against_reference(state["version"], scan_data)
+        if ref_uncovered:
+            print(
+                f"\n\033[31m✗ 发现 {len(ref_uncovered)} 条未覆盖的 cyber/refusal:\033[0m"
+            )
+            for item in ref_uncovered:
+                print(f"  • {item[:100]}")
+            print(f"  → 需要新增 patch 覆盖这些内容")
+        elif ref_uncovered is None:
+            # 参照不可用 (无网络/版本未收录), fallback regex
+            new_restrictions = scan_new_restrictions(scan_data)
+            if new_restrictions:
                 print(
-                    f"\n\033[31m✗ 参照验证: {len(ref_uncovered)} 条 cyber/refusal 未被覆盖!\033[0m"
+                    f"\n\033[33m⚠ 发现 {len(new_restrictions)} 个疑似新增 cyber 拒绝指令:\033[0m"
                 )
-                for item in ref_uncovered:
-                    print(f"  • {item[:100]}")
-                print(f"  → 需要新增 patch 覆盖这些内容")
-            elif ref_uncovered is None:
-                # 参照不可用 (无网络/版本未收录), fallback regex
-                new_restrictions = scan_new_restrictions(scan_data)
-                if new_restrictions:
-                    print(
-                        f"\n\033[33m⚠ 发现 {len(new_restrictions)} 个疑似新增 cyber 拒绝指令:\033[0m"
-                    )
-                    for r in new_restrictions[:5]:
-                        print(f"  [{r['category']}] {r['text'][:100]}")
-                    if len(new_restrictions) > 5:
-                        print(f"  … 还有 {len(new_restrictions) - 5} 个")
-                    print(f"  → 建议检查并确认是否需要新增 patch")
-        except Exception:
-            pass
+                for r in new_restrictions[:5]:
+                    print(f"  [{r['category']}] {r['text'][:100]}")
+                if len(new_restrictions) > 5:
+                    print(f"  … 还有 {len(new_restrictions) - 5} 个")
+                print(f"  → 建议检查并确认是否需要新增 patch")
+    except Exception:
+        pass
 
     if applicable > 0:
         print(f"\n→ 运行 'python3 {sys.argv[0]} --apply' 应用这些 patch")
