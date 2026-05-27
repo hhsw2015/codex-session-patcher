@@ -1665,29 +1665,30 @@ def cleanup_old_baks(current_exe: str) -> list:
     return deleted
 
 
-def _verify_against_reference(version: str, data: bytes) -> list:
-    """从 phistory GitHub 获取参照 system prompt, 提取 cyber/refusal 句子,
-    验证每条是否在 binary 中已被覆盖。
+_REFUSAL_VERBS = [
+    "Refuse requests", "Decline requests", "Reject requests",
+    "NEVER help", "NEVER assist", "NEVER provide", "NEVER write",
+    "NEVER create", "NEVER generate",
+    "must not help", "must not assist",
+    "do not help", "do not assist",
+]
+_CYBER_CONTEXT = [
+    "malware", "exploit", "attack", "DoS", "supply chain", "malicious",
+    "C2 framework", "credential", "evasion", "hack", "weapon",
+    "rootkit", "keylogger", "RAT", "botnet", "shellcode", "phishing",
+    "ransomware", "trojan", "zero-day", "0day",
+]
 
-    返回未覆盖的句子列表 (空 = 全部覆盖)。
-    """
-    # cyber/refusal 提取标准
-    _REFUSAL_VERBS = [
-        "Refuse requests", "Decline requests", "Reject requests",
-        "NEVER help", "NEVER assist", "NEVER provide", "NEVER write",
-        "NEVER create", "NEVER generate",
-        "must not help", "must not assist",
-        "do not help", "do not assist",
-    ]
-    _CYBER_CONTEXT = [
-        "malware", "exploit", "attack", "DoS", "supply chain", "malicious",
-        "C2 framework", "credential", "evasion", "hack", "weapon",
-        "rootkit", "keylogger", "RAT", "botnet", "shellcode", "phishing",
-        "ransomware", "trojan", "zero-day", "0day",
-    ]
 
-    # 尝试从 phistory 获取参照 (可能失败 -- 无网络/版本不存在)
-    prompt_text = None
+def _is_cyber_refusal(sentence: str) -> bool:
+    """判断一个句子是否属于 cyber/refusal 类型"""
+    has_verb = any(v in sentence for v in _REFUSAL_VERBS)
+    has_cyber = any(k in sentence for k in _CYBER_CONTEXT)
+    return has_verb and has_cyber
+
+
+def _fetch_phistory_prompt(version: str) -> str:
+    """从 phistory GitHub 获取指定版本的 system prompt, 失败返回 None"""
     try:
         r = subprocess.run(
             ["gh", "api",
@@ -1697,26 +1698,56 @@ def _verify_against_reference(version: str, data: bytes) -> list:
         )
         if r.returncode == 0 and r.stdout.strip():
             import base64
-            prompt_text = base64.b64decode(r.stdout.strip()).decode("utf-8", errors="replace")
+            return base64.b64decode(r.stdout.strip()).decode("utf-8", errors="replace")
     except Exception:
         pass
+    return None
 
-    if not prompt_text:
-        return None  # 无参照可用, 调用方 fallback regex
 
-    # 提取 cyber/refusal 句子
+def _extract_cyber_sentences(prompt_text: str) -> list:
+    """从 system prompt 中提取所有 cyber/refusal 句子"""
     sentences = re.split(r"(?<=[.!])\s+|\n", prompt_text)
-    cyber_refusals = []
-    for s in sentences:
-        s = s.strip()
-        if len(s) < 20:
-            continue
-        has_verb = any(v in s for v in _REFUSAL_VERBS)
-        has_cyber = any(k in s for k in _CYBER_CONTEXT)
-        if has_verb and has_cyber:
-            cyber_refusals.append(s)
+    return [s.strip() for s in sentences if len(s.strip()) >= 20 and _is_cyber_refusal(s)]
 
-    # 验证每条在 binary 中是否已被清除
+
+def _verify_against_reference(version: str, data: bytes) -> list:
+    """从 phistory 获取参照 prompt 并验证覆盖率。
+
+    优先做版本间 diff (新增的 cyber/refusal), 若无上一版本则全量检查。
+    返回: 未覆盖句子列表, None = 参照不可用。
+    """
+    new_prompt = _fetch_phistory_prompt(version)
+    if not new_prompt:
+        return None
+
+    # 尝试版本间 diff: 找上一个版本做比对 (只关注新增)
+    # 从版本号推算上一个 (2.1.150 → 尝试 2.1.149, 2.1.148...)
+    parts = version.split(".")
+    if len(parts) == 3 and parts[2].isdigit():
+        old_prompt = None
+        minor = int(parts[2])
+        for delta in range(1, 5):  # 尝试前 4 个版本
+            prev_ver = f"{parts[0]}.{parts[1]}.{minor - delta}"
+            old_prompt = _fetch_phistory_prompt(prev_ver)
+            if old_prompt:
+                break
+        if old_prompt:
+            # Diff 模式: 只看新增的 cyber/refusal 句子
+            old_cyber = set(_extract_cyber_sentences(old_prompt))
+            new_cyber = set(_extract_cyber_sentences(new_prompt))
+            added = new_cyber - old_cyber
+            if not added:
+                return []  # 无新增 cyber/refusal -- 安全
+            # 检查新增的是否被 patch 覆盖
+            uncovered = []
+            for s in added:
+                marker = s[:60].encode("utf-8")
+                if data.count(marker) > 0:
+                    uncovered.append(s)
+            return uncovered
+
+    # Fallback: 无上一版本, 全量检查当前版本所有 cyber/refusal
+    cyber_refusals = _extract_cyber_sentences(new_prompt)
     uncovered = []
     for s in cyber_refusals:
         marker = s[:60].encode("utf-8")
