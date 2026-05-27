@@ -30,6 +30,7 @@ Claude Code CLI 限制移除补丁 v2 (Bun standalone 适配, Mac + Windows)
   3 = 全部 patch 失效 (新版本结构变更, 需更新 patcher)
 """
 
+import base64
 import os
 import platform
 import re
@@ -1697,7 +1698,6 @@ def _fetch_phistory_prompt(version: str) -> str:
             capture_output=True, text=True, timeout=15,
         )
         if r.returncode == 0 and r.stdout.strip():
-            import base64
             return base64.b64decode(r.stdout.strip()).decode("utf-8", errors="replace")
     except Exception:
         pass
@@ -1727,6 +1727,8 @@ def _verify_against_reference(version: str, data: bytes) -> list:
         old_prompt = None
         minor = int(parts[2])
         for delta in range(1, 5):  # 尝试前 4 个版本
+            if minor - delta < 0:
+                break
             prev_ver = f"{parts[0]}.{parts[1]}.{minor - delta}"
             old_prompt = _fetch_phistory_prompt(prev_ver)
             if old_prompt:
@@ -1963,37 +1965,33 @@ def silent_check():
         )
         print(f"  建议检查 {script_dir} 是否有更新版本的脚本。")
 
-    # 自动扫描 cyber 拒绝内容 (参照优先, regex 兜底)
-    try:
-        with open(state["exe"], "rb") as f:
-            scan_data = f.read()
-
-        # 优先用 phistory 参照 (精确)
-        ref_uncovered = _verify_against_reference(state["version"], scan_data)
-        if ref_uncovered:
-            print(
-                f"\n\033[31m✗ 参照验证: {len(ref_uncovered)} 条 cyber/refusal 未被覆盖!\033[0m"
-            )
-            for item in ref_uncovered:
-                print(f"  • {item[:100]}")
-            print(f"  → 需要新增 patch 覆盖这些内容")
-        elif ref_uncovered is not None:
-            # 参照可用且全覆盖 -- 不需要 regex
-            pass
-        else:
-            # 参照不可用 (无网络/版本未收录), fallback regex
-            new_restrictions = scan_new_restrictions(scan_data)
-            if new_restrictions:
+    # 自动扫描 cyber 拒绝内容 (仅在有 pending/broken 时触发, 省网络)
+    if applicable > 0 or broken > 0:
+        try:
+            with open(state["exe"], "rb") as f:
+                scan_data = f.read()
+            ref_uncovered = _verify_against_reference(state["version"], scan_data)
+            if ref_uncovered:
                 print(
-                    f"\n\033[33m⚠ 发现 {len(new_restrictions)} 个疑似新增 cyber 拒绝指令:\033[0m"
+                    f"\n\033[31m✗ 参照验证: {len(ref_uncovered)} 条 cyber/refusal 未被覆盖!\033[0m"
                 )
-                for r in new_restrictions[:5]:
-                    print(f"  [{r['category']}] {r['text'][:100]}")
-                if len(new_restrictions) > 5:
-                    print(f"  … 还有 {len(new_restrictions) - 5} 个")
-                print(f"  → 建议检查并确认是否需要新增 patch")
-    except Exception:
-        pass
+                for item in ref_uncovered:
+                    print(f"  • {item[:100]}")
+                print(f"  → 需要新增 patch 覆盖这些内容")
+            elif ref_uncovered is None:
+                # 参照不可用 (无网络/版本未收录), fallback regex
+                new_restrictions = scan_new_restrictions(scan_data)
+                if new_restrictions:
+                    print(
+                        f"\n\033[33m⚠ 发现 {len(new_restrictions)} 个疑似新增 cyber 拒绝指令:\033[0m"
+                    )
+                    for r in new_restrictions[:5]:
+                        print(f"  [{r['category']}] {r['text'][:100]}")
+                    if len(new_restrictions) > 5:
+                        print(f"  … 还有 {len(new_restrictions) - 5} 个")
+                    print(f"  → 建议检查并确认是否需要新增 patch")
+        except Exception:
+            pass
 
     if applicable > 0:
         print(f"\n→ 运行 'python3 {sys.argv[0]} --apply' 应用这些 patch")
