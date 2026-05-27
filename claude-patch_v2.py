@@ -1702,7 +1702,7 @@ def _verify_against_reference(version: str, data: bytes) -> list:
         pass
 
     if not prompt_text:
-        return []  # 无参照可用, 跳过
+        return None  # 无参照可用, 调用方 fallback regex
 
     # 提取 cyber/refusal 句子
     sentences = re.split(r"(?<=[.!])\s+|\n", prompt_text)
@@ -1932,12 +1932,12 @@ def silent_check():
         )
         print(f"  建议检查 {script_dir} 是否有更新版本的脚本。")
 
-    # 自动扫描新增 cyber 拒绝内容 (两层验证)
+    # 自动扫描 cyber 拒绝内容 (参照优先, regex 兜底)
     try:
         with open(state["exe"], "rb") as f:
             scan_data = f.read()
 
-        # 层 1: 尝试从 phistory 参照 prompt 验证覆盖率
+        # 优先用 phistory 参照 (精确)
         ref_uncovered = _verify_against_reference(state["version"], scan_data)
         if ref_uncovered:
             print(
@@ -1945,18 +1945,22 @@ def silent_check():
             )
             for item in ref_uncovered:
                 print(f"  • {item[:100]}")
-
-        # 层 2: regex 模式扫描 (兜底, 覆盖参照未收录的)
-        new_restrictions = scan_new_restrictions(scan_data)
-        if new_restrictions:
-            print(
-                f"\n\033[33m⚠ 发现 {len(new_restrictions)} 个疑似新增 cyber 拒绝指令:\033[0m"
-            )
-            for r in new_restrictions[:5]:
-                print(f"  [{r['category']}] {r['text'][:100]}")
-            if len(new_restrictions) > 5:
-                print(f"  … 还有 {len(new_restrictions) - 5} 个")
-            print(f"  → 建议检查并确认是否需要新增 patch")
+            print(f"  → 需要新增 patch 覆盖这些内容")
+        elif ref_uncovered is not None:
+            # 参照可用且全覆盖 -- 不需要 regex
+            pass
+        else:
+            # 参照不可用 (无网络/版本未收录), fallback regex
+            new_restrictions = scan_new_restrictions(scan_data)
+            if new_restrictions:
+                print(
+                    f"\n\033[33m⚠ 发现 {len(new_restrictions)} 个疑似新增 cyber 拒绝指令:\033[0m"
+                )
+                for r in new_restrictions[:5]:
+                    print(f"  [{r['category']}] {r['text'][:100]}")
+                if len(new_restrictions) > 5:
+                    print(f"  … 还有 {len(new_restrictions) - 5} 个")
+                print(f"  → 建议检查并确认是否需要新增 patch")
     except Exception:
         pass
 
