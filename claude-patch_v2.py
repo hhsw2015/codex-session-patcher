@@ -1665,6 +1665,66 @@ def cleanup_old_baks(current_exe: str) -> list:
     return deleted
 
 
+def _verify_against_reference(version: str, data: bytes) -> list:
+    """从 phistory GitHub 获取参照 system prompt, 提取 cyber/refusal 句子,
+    验证每条是否在 binary 中已被覆盖。
+
+    返回未覆盖的句子列表 (空 = 全部覆盖)。
+    """
+    # cyber/refusal 提取标准
+    _REFUSAL_VERBS = [
+        "Refuse requests", "Decline requests", "Reject requests",
+        "NEVER help", "NEVER assist", "NEVER provide", "NEVER write",
+        "NEVER create", "NEVER generate",
+        "must not help", "must not assist",
+        "do not help", "do not assist",
+    ]
+    _CYBER_CONTEXT = [
+        "malware", "exploit", "attack", "DoS", "supply chain", "malicious",
+        "C2 framework", "credential", "evasion", "hack", "weapon",
+        "rootkit", "keylogger", "RAT", "botnet", "shellcode", "phishing",
+        "ransomware", "trojan", "zero-day", "0day",
+    ]
+
+    # 尝试从 phistory 获取参照 (可能失败 -- 无网络/版本不存在)
+    prompt_text = None
+    try:
+        r = subprocess.run(
+            ["gh", "api",
+             f"repos/WEIFENG2333/phistory/contents/captures/claude-code/{version}/prompt.md",
+             "--jq", ".content"],
+            capture_output=True, text=True, timeout=15,
+        )
+        if r.returncode == 0 and r.stdout.strip():
+            import base64
+            prompt_text = base64.b64decode(r.stdout.strip()).decode("utf-8", errors="replace")
+    except Exception:
+        pass
+
+    if not prompt_text:
+        return []  # 无参照可用, 跳过
+
+    # 提取 cyber/refusal 句子
+    sentences = re.split(r"(?<=[.!])\s+|\n", prompt_text)
+    cyber_refusals = []
+    for s in sentences:
+        s = s.strip()
+        if len(s) < 20:
+            continue
+        has_verb = any(v in s for v in _REFUSAL_VERBS)
+        has_cyber = any(k in s for k in _CYBER_CONTEXT)
+        if has_verb and has_cyber:
+            cyber_refusals.append(s)
+
+    # 验证每条在 binary 中是否已被清除
+    uncovered = []
+    for s in cyber_refusals:
+        marker = s[:60].encode("utf-8")
+        if data.count(marker) > 0:
+            uncovered.append(s)
+    return uncovered
+
+
 def scan_new_restrictions(data: bytes) -> list:
     """扫描 binary 中可能是新增 cyber-related 用户指令拒绝的内容。
 
@@ -1872,10 +1932,21 @@ def silent_check():
         )
         print(f"  建议检查 {script_dir} 是否有更新版本的脚本。")
 
-    # 自动扫描新增 cyber 拒绝内容
+    # 自动扫描新增 cyber 拒绝内容 (两层验证)
     try:
         with open(state["exe"], "rb") as f:
             scan_data = f.read()
+
+        # 层 1: 尝试从 phistory 参照 prompt 验证覆盖率
+        ref_uncovered = _verify_against_reference(state["version"], scan_data)
+        if ref_uncovered:
+            print(
+                f"\n\033[31m✗ 参照验证: {len(ref_uncovered)} 条 cyber/refusal 未被覆盖!\033[0m"
+            )
+            for item in ref_uncovered:
+                print(f"  • {item[:100]}")
+
+        # 层 2: regex 模式扫描 (兜底, 覆盖参照未收录的)
         new_restrictions = scan_new_restrictions(scan_data)
         if new_restrictions:
             print(
