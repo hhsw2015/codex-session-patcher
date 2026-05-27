@@ -1921,8 +1921,6 @@ _CYBER_VERIFY_KEYWORDS = [
 
 def _ccglass_live_verify():
     """通过 ccglass 启动一次性 claude session, 抓取真实 system prompt 验证清理效果。"""
-    import glob as _glob
-
     ccglass_base = os.path.expanduser("~/.ccglass/sessions")
     # 记录验证前的 session 时间戳
     before_sessions = set()
@@ -1936,7 +1934,7 @@ def _ccglass_live_verify():
         r = subprocess.run(
             ["ccglass", "claude", "--no-open", "--no-mcp", "--",
              "--no-session-persistence", "-p", "Say OK"],
-            capture_output=True, text=True, timeout=30,
+            capture_output=True, text=True, timeout=60,
         )
     except (subprocess.TimeoutExpired, FileNotFoundError):
         print("  \033[33m⚠ ccglass 验证超时或未找到\033[0m")
@@ -1957,11 +1955,10 @@ def _ccglass_live_verify():
 
     # 从最新 capture 中找 system prompt blob
     # ccglass v2 blob 存在 session 根目录/blobs/ 下 (不在子session目录内)
-    import json as _json
     for cap in sorted(new_captures, reverse=True):
         try:
             with open(cap) as f:
-                d = _json.load(f)
+                d = json.load(f)
         except Exception:
             continue
         if not isinstance(d, dict):
@@ -1986,7 +1983,7 @@ def _ccglass_live_verify():
             continue
         try:
             with open(blob_path) as f:
-                blocks = _json.load(f)
+                blocks = json.load(f)
         except Exception:
             continue
         full = " ".join(b.get("text", "") for b in blocks if isinstance(b, dict))
@@ -2084,10 +2081,9 @@ def silent_check():
     except Exception:
         pass
 
-    # ccglass 动态验证 (patch 全 applied + ccglass 可用时)
+    # ccglass 提示 (不自动跑, 避免消耗 API tokens)
     if applicable == 0 and broken == 0 and shutil.which("ccglass"):
-        print(f"\n\033[36m→ ccglass 动态验证 (实际 API 请求)...\033[0m")
-        _ccglass_live_verify()
+        print(f"\n\033[36m提示: 可运行 --verify 做 ccglass 动态验证 (确认 API 层面已清理)\033[0m")
 
     if applicable > 0:
         print(f"\n→ 运行 'python3 {sys.argv[0]} --apply' 应用这些 patch")
