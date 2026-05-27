@@ -22,6 +22,7 @@ Claude Code CLI 限制移除补丁 v2 (Bun standalone 适配, Mac + Windows)
   python claude-patch_v2.py --revert     # 静默回滚
   python claude-patch_v2.py --status     # 显示状态
   python claude-patch_v2.py --path /path/to/claude [cmd]  # 手动指定 binary 路径
+  python claude-patch_v2.py --verify    # ccglass 动态验证 (确认 API 收到的 prompt 已清理)
 
 退出码 (--check):
   0 = 无需操作 (全部已 patch, 或 mixed 已 patch + 失效)
@@ -1911,6 +1912,96 @@ def scan_new_restrictions(data: bytes) -> list:
     return unique
 
 
+_CYBER_VERIFY_KEYWORDS = [
+    "Refuse requests", "destructive techniques", "malicious purposes",
+    "supply chain compromise", "DoS attacks", "C2 frameworks",
+    "detection evasion", "IMPORTANT: Assist with authorized",
+]
+
+
+def _ccglass_live_verify():
+    """通过 ccglass 启动一次性 claude session, 抓取真实 system prompt 验证清理效果。"""
+    import glob as _glob
+
+    ccglass_base = os.path.expanduser("~/.ccglass/sessions")
+    # 记录验证前的 session 时间戳
+    before_sessions = set()
+    for root, dirs, files in os.walk(ccglass_base):
+        for f in files:
+            if f.endswith(".json") and f[0].isdigit():
+                before_sessions.add(os.path.join(root, f))
+
+    # 启动 ccglass + claude 一次性请求
+    try:
+        r = subprocess.run(
+            ["ccglass", "claude", "--no-open", "--no-mcp", "--",
+             "--no-session-persistence", "-p", "Say OK"],
+            capture_output=True, text=True, timeout=30,
+        )
+    except (subprocess.TimeoutExpired, FileNotFoundError):
+        print("  \033[33m⚠ ccglass 验证超时或未找到\033[0m")
+        return
+
+    # 找新增的 session 文件
+    new_captures = []
+    for root, dirs, files in os.walk(ccglass_base):
+        for f in sorted(files):
+            if f.endswith(".json") and f[0].isdigit():
+                path = os.path.join(root, f)
+                if path not in before_sessions:
+                    new_captures.append(path)
+
+    if not new_captures:
+        print("  \033[33m⚠ 未捕获到 ccglass session\033[0m")
+        return
+
+    # 从最新 capture 中找 system prompt blob
+    # ccglass v2 blob 存在 session 根目录/blobs/ 下 (不在子session目录内)
+    import json as _json
+    for cap in sorted(new_captures, reverse=True):
+        try:
+            with open(cap) as f:
+                d = _json.load(f)
+        except Exception:
+            continue
+        if not isinstance(d, dict):
+            continue
+        system_ref = d.get("request", {}).get("system", "")
+        if not isinstance(system_ref, str) or not system_ref.startswith("sha256:"):
+            continue
+        sha = system_ref.split(":")[1]
+        # blob 在 session 集合根目录的 blobs/ 下 (向上找包含 blobs/ 的目录)
+        search_dir = os.path.dirname(cap)
+        blob_path = None
+        for _ in range(3):  # 向上最多 3 级
+            candidate = os.path.join(search_dir, "blobs", sha[:2], sha + ".json")
+            if os.path.isfile(candidate):
+                blob_path = candidate
+                break
+            parent = os.path.dirname(search_dir)
+            if parent == search_dir:
+                break
+            search_dir = parent
+        if not blob_path:
+            continue
+        try:
+            with open(blob_path) as f:
+                blocks = _json.load(f)
+        except Exception:
+            continue
+        full = " ".join(b.get("text", "") for b in blocks if isinstance(b, dict))
+        found = [kw for kw in _CYBER_VERIFY_KEYWORDS if kw in full]
+        if found:
+            print(f"  \033[31m✗ API 实际收到的 prompt 仍有残留 ({len(found)} 项):\033[0m")
+            for kw in found:
+                print(f"    • {kw}")
+        else:
+            print(f"  \033[32m✓ 动态验证通过: API system prompt ({len(full)} chars) 无 cyber/refusal\033[0m")
+        return
+
+    print("  \033[33m⚠ 未找到 system prompt blob\033[0m")
+
+
 def silent_check():
     """Dry-run: 检测可应用的 patch，不修改文件。"""
     state = gather_state()
@@ -1993,6 +2084,11 @@ def silent_check():
     except Exception:
         pass
 
+    # ccglass 动态验证 (patch 全 applied + ccglass 可用时)
+    if applicable == 0 and broken == 0 and shutil.which("ccglass"):
+        print(f"\n\033[36m→ ccglass 动态验证 (实际 API 请求)...\033[0m")
+        _ccglass_live_verify()
+
     if applicable > 0:
         print(f"\n→ 运行 'python3 {sys.argv[0]} --apply' 应用这些 patch")
         sys.exit(1)
@@ -2035,6 +2131,12 @@ def main():
         silent_apply(auto_yes=auto_yes)
     elif arg == "--revert":
         silent_revert()
+    elif arg == "--verify":
+        if not shutil.which("ccglass"):
+            print("[ERROR] ccglass 未安装 (npm install -g ccglass)")
+            sys.exit(1)
+        print("ccglass 动态验证: 启动一次性 claude session...")
+        _ccglass_live_verify()
     elif arg in ("-h", "--help"):
         print(__doc__)
     else:
