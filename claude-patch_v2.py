@@ -1682,9 +1682,10 @@ _CYBER_CONTEXT = [
 
 
 def _is_cyber_refusal(sentence: str) -> bool:
-    """判断一个句子是否属于 cyber/refusal 类型"""
-    has_verb = any(v in sentence for v in _REFUSAL_VERBS)
-    has_cyber = any(k in sentence for k in _CYBER_CONTEXT)
+    """判断一个句子是否属于 cyber/refusal 类型 (大小写不敏感)"""
+    s_lower = sentence.lower()
+    has_verb = any(v.lower() in s_lower for v in _REFUSAL_VERBS)
+    has_cyber = any(k.lower() in s_lower for k in _CYBER_CONTEXT)
     return has_verb and has_cyber
 
 
@@ -1695,7 +1696,7 @@ def _fetch_phistory_prompt(version: str) -> str:
             ["gh", "api",
              f"repos/WEIFENG2333/phistory/contents/captures/claude-code/{version}/prompt.md",
              "--jq", ".content"],
-            capture_output=True, text=True, timeout=15,
+            capture_output=True, text=True, timeout=8,
         )
         if r.returncode == 0 and r.stdout.strip():
             return base64.b64decode(r.stdout.strip()).decode("utf-8", errors="replace")
@@ -1726,7 +1727,7 @@ def _verify_against_reference(version: str, data: bytes) -> list:
     if len(parts) == 3 and parts[2].isdigit():
         old_prompt = None
         minor = int(parts[2])
-        for delta in range(1, 5):  # 尝试前 4 个版本
+        for delta in range(1, 3):  # 尝试前 2 个版本 (限制网络耗时)
             if minor - delta < 0:
                 break
             prev_ver = f"{parts[0]}.{parts[1]}.{minor - delta}"
@@ -1799,7 +1800,7 @@ def scan_new_restrictions(data: bytes) -> list:
         # "authorized security testing" 限制语境
         ("cyber-risk-context",
          rb"(?:Assist with|authorized)\s+(?:security testing|penetration testing|pentest|red.?team)"
-         rb"[^\"]{10,300}(?:Refuse|refuse|NEVER|never|must not|do not)[^\"]{5,100}"),
+         rb"[^\"]{10,300}(?:Refuse|refuse|NEVER|never|must not|do not)[^\"]{0,100}"),
         # malicious purpose 限定 (模型被告知不要协助恶意目的)
         ("malicious-restrict",
          rb"(?:for malicious purposes?|malicious intent|malicious use)[^\"]{0,50}"
@@ -1807,7 +1808,7 @@ def scan_new_restrictions(data: bytes) -> list:
         # dual-use 限制 (要求授权才能做)
         ("dual-use-gate",
          rb"(?:Dual.use|dual.use)[^\"]{0,30}"
-         rb"(?:require|only.{0,10}authorized|must.{0,10}confirm|need.{0,10}authorization)[^\"]{5,150}"),
+         rb"(?:require|only.{0,10}authorized|must.{0,10}confirm|need.{0,10}authorization)[^\"]{0,150}"),
         # 攻击类工具限制 (DoS, supply chain, mass targeting)
         ("attack-restrict",
          rb"(?:DoS attacks?|supply chain compromise|mass targeting|detection evasion|"
