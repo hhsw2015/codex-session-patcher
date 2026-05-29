@@ -402,39 +402,11 @@ PATCHES = [
         "include_tail": True,
     },
     {
-        "id": 21,
-        "name": "模型ID点格式兼容 (4.7=4-7)",
-        "layer": "代码",
-        "desc": "让 claude-opus-4.X 等同 4-X (同时识别两种格式, 解锁 ultracode/effort)",
-        "special": "model_id_format",
-    },
-    {
-        "id": 22,
-        "name": "allow_workflows feature flag",
-        "layer": "代码",
-        "desc": "q67() 强制返回 true, 解锁 dynamic workflows / ultracode (绕过后端 feature flag)",
-        "special": "allow_workflows",
-    },
-    {
-        "id": 23,
-        "name": "tengu_workflows_enabled feature flag",
-        "layer": "代码",
-        "desc": "L_() 调用强制返回 true, 让 FX5 的 available/defaultOn 都为 true",
-        "special": "tengu_workflows_flag",
-    },
-    {
         "id": 24,
         "name": "v0() 强制 dynamic workflows 启用",
         "layer": "代码",
         "desc": "v0() 直接返回 true, 绕过 disableWorkflows/feature flag/settings 整条判定链",
         "special": "force_v0_true",
-    },
-    {
-        "id": 25,
-        "name": "vx() 强制 ultracode 资格通过",
-        "layer": "代码",
-        "desc": "vx() 直接返回 true, 绕过 v0+VcH(model) 模型能力判定 (任何模型可启 ultracode)",
-        "special": "force_vx_true",
     },
     {
         "id": 26,
@@ -445,9 +417,9 @@ PATCHES = [
     },
     {
         "id": 27,
-        "name": "HM 模型归一化兼容点格式",
+        "name": "HM 模型归一化兼容点格式 (4.7=4-7)",
         "layer": "代码",
-        "desc": "HM() includes 子串匹配改正则, 让 4.7 等点格式被正确归一化",
+        "desc": "HM() includes 子串匹配改正则, 让 claude-opus-4.X 等点格式被正确归一化为 4-X",
         "special": "hm_normalize_dot",
     },
     # #20 已移除: dangerous_shell_prefix -- 保护用户免受恶意 repo 注入,
@@ -488,104 +460,10 @@ def find_all_patch_locations(data):
                 )
         elif p.get("special") == "danger_table_skip":
             continue
-        elif p.get("special") == "model_id_format":
-            # 把 q==="claude-(opus|sonnet)-4-X" 改为 /(opus|sonnet)-4[.-]X/.test(q)
-            # 等长替换, 让 . 和 - 格式都能匹配
-            replacements = [
-                (b'q==="claude-opus-4-8"', b'/opus-4[.-]8/.test(q)'),
-                (b'q==="claude-opus-4-7"', b'/opus-4[.-]7/.test(q)'),
-                (b'q==="claude-opus-4-6"', b'/opus-4[.-]6/.test(q)'),
-                (b'q==="claude-sonnet-4-6"', b'/sonnet-4[.-]6/.test(q)'),
-            ]
-            for old, new in replacements:
-                if len(old) != len(new):
-                    continue
-                i = 0
-                while True:
-                    pos = data.find(old, i)
-                    if pos == -1:
-                        break
-                    i = pos + 1
-                    results.append(
-                        {
-                            "patch_id": p["id"],
-                            "name": p["name"],
-                            "offset": pos,
-                            "length": len(old),
-                            "old": old,
-                            "new": new,
-                        }
-                    )
-        elif p.get("special") == "allow_workflows":
-            # q67() 后端 feature flag 检查 → 强制返回 true
-            old = b'function q67(){return V7("allow_workflows")}'
-            new = b'function q67(){return!0                    }'
-            if len(old) != len(new):
-                continue
-            i = 0
-            while True:
-                pos = data.find(old, i)
-                if pos == -1:
-                    break
-                i = pos + 1
-                results.append(
-                    {
-                        "patch_id": p["id"],
-                        "name": p["name"],
-                        "offset": pos,
-                        "length": len(old),
-                        "old": old,
-                        "new": new,
-                    }
-                )
-        elif p.get("special") == "tengu_workflows_flag":
-            # L_("tengu_workflows_enabled",!0) → !0 (with comment padding)
-            old = b'L_("tengu_workflows_enabled",!0)'
-            new = b'!0/*                          */'
-            if len(old) != len(new):
-                continue
-            i = 0
-            while True:
-                pos = data.find(old, i)
-                if pos == -1:
-                    break
-                i = pos + 1
-                results.append(
-                    {
-                        "patch_id": p["id"],
-                        "name": p["name"],
-                        "offset": pos,
-                        "length": len(old),
-                        "old": old,
-                        "new": new,
-                    }
-                )
         elif p.get("special") == "force_v0_true":
             # 直接强制 v0() 返回 true (绕过整条判定链)
             old = b'function v0(){if($K6())return!1;if(!q67())return!1;let{available:H,defaultOn:_}=$P8();if(!H)return!1;return UX5()??_}'
             new = b'function v0(){return!0/*                                                                                          */}'
-            if len(old) != len(new):
-                continue
-            i = 0
-            while True:
-                pos = data.find(old, i)
-                if pos == -1:
-                    break
-                i = pos + 1
-                results.append(
-                    {
-                        "patch_id": p["id"],
-                        "name": p["name"],
-                        "offset": pos,
-                        "length": len(old),
-                        "old": old,
-                        "new": new,
-                    }
-                )
-        elif p.get("special") == "force_vx_true":
-            # vx() 直接返回 true, 绕过模型能力检查 (VcH)
-            old = b'function vx(H){return v0()&&(H===void 0||VcH(H))}'
-            new = b'function vx(H){return!0/*                     */}'
             if len(old) != len(new):
                 continue
             i = 0
@@ -734,21 +612,8 @@ def count_patch_status(data: bytes) -> dict:
             status[p["id"]] = "pending" if n > 0 else "applied"
         elif p.get("special") == "danger_table_skip":
             continue
-        elif p.get("special") == "model_id_format":
-            # 检测原始 q==="claude-opus-4-7" 模式 (任一存在 = 未 patch)
-            n = data.count(b'q==="claude-opus-4-7"')
-            status[p["id"]] = "pending" if n > 0 else "applied"
-        elif p.get("special") == "allow_workflows":
-            n = data.count(b'function q67(){return V7("allow_workflows")}')
-            status[p["id"]] = "pending" if n > 0 else "applied"
-        elif p.get("special") == "tengu_workflows_flag":
-            n = data.count(b'L_("tengu_workflows_enabled",!0)')
-            status[p["id"]] = "pending" if n > 0 else "applied"
         elif p.get("special") == "force_v0_true":
             n = data.count(b'function v0(){if($K6())return!1;if(!q67())')
-            status[p["id"]] = "pending" if n > 0 else "applied"
-        elif p.get("special") == "force_vx_true":
-            n = data.count(b'function vx(H){return v0()&&(H===void 0||VcH(H))}')
             status[p["id"]] = "pending" if n > 0 else "applied"
         elif p.get("special") == "er_no_downgrade":
             n = data.count(b'if(T==="xhigh"&&!VcH(H))return"high";')
