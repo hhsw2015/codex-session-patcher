@@ -422,6 +422,13 @@ PATCHES = [
         "desc": "L_() 调用强制返回 true, 让 FX5 的 available/defaultOn 都为 true",
         "special": "tengu_workflows_flag",
     },
+    {
+        "id": 24,
+        "name": "v0() 强制 dynamic workflows 启用",
+        "layer": "代码",
+        "desc": "v0() 直接返回 true, 绕过 disableWorkflows/feature flag/settings 整条判定链",
+        "special": "force_v0_true",
+    },
     # #20 已移除: dangerous_shell_prefix -- 保护用户免受恶意 repo 注入,
     # 不属于"模型拒绝用户指令", 保留。
 ]
@@ -532,6 +539,28 @@ def find_all_patch_locations(data):
                         "new": new,
                     }
                 )
+        elif p.get("special") == "force_v0_true":
+            # 直接强制 v0() 返回 true (绕过整条判定链)
+            old = b'function v0(){if($K6())return!1;if(!q67())return!1;let{available:H,defaultOn:_}=$P8();if(!H)return!1;return UX5()??_}'
+            new = b'function v0(){return!0/*                                                                                          */}'
+            if len(old) != len(new):
+                continue
+            i = 0
+            while True:
+                pos = data.find(old, i)
+                if pos == -1:
+                    break
+                i = pos + 1
+                results.append(
+                    {
+                        "patch_id": p["id"],
+                        "name": p["name"],
+                        "offset": pos,
+                        "length": len(old),
+                        "old": old,
+                        "new": new,
+                    }
+                )
         else:
             anchor = p["anchor"]
             i = 0
@@ -618,6 +647,9 @@ def count_patch_status(data: bytes) -> dict:
             status[p["id"]] = "pending" if n > 0 else "applied"
         elif p.get("special") == "tengu_workflows_flag":
             n = data.count(b'L_("tengu_workflows_enabled",!0)')
+            status[p["id"]] = "pending" if n > 0 else "applied"
+        elif p.get("special") == "force_v0_true":
+            n = data.count(b'function v0(){if($K6())return!1;if(!q67())')
             status[p["id"]] = "pending" if n > 0 else "applied"
         else:
             n = data.count(p["anchor"])
