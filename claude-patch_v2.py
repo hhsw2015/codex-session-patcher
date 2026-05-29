@@ -443,6 +443,13 @@ PATCHES = [
         "desc": "去掉 er() 中 xhigh→high 降级逻辑, 让 ultracode 状态在 /effort 显示正确",
         "special": "er_no_downgrade",
     },
+    {
+        "id": 27,
+        "name": "HM 模型归一化兼容点格式",
+        "layer": "代码",
+        "desc": "HM() includes 子串匹配改正则, 让 4.7 等点格式被正确归一化",
+        "special": "hm_normalize_dot",
+    },
     # #20 已移除: dangerous_shell_prefix -- 保护用户免受恶意 repo 注入,
     # 不属于"模型拒绝用户指令", 保留。
 ]
@@ -619,6 +626,37 @@ def find_all_patch_locations(data):
                         "new": new,
                     }
                 )
+        elif p.get("special") == "hm_normalize_dot":
+            # HM 中 H.includes("claude-X-4-Y") 改为正则 /claude-X-4[.-]Y/.test(H)
+            replacements = [
+                (b'H.includes("claude-opus-4-8")',   b'/claude-opus-4[.-]8/.test(H) '),
+                (b'H.includes("claude-opus-4-7")',   b'/claude-opus-4[.-]7/.test(H) '),
+                (b'H.includes("claude-opus-4-6")',   b'/claude-opus-4[.-]6/.test(H) '),
+                (b'H.includes("claude-opus-4-5")',   b'/claude-opus-4[.-]5/.test(H) '),
+                (b'H.includes("claude-opus-4-1")',   b'/claude-opus-4[.-]1/.test(H) '),
+                (b'H.includes("claude-sonnet-4-6")', b'/claude-sonnet-4[.-]6/.test(H) '),
+                (b'H.includes("claude-sonnet-4-5")', b'/claude-sonnet-4[.-]5/.test(H) '),
+                (b'H.includes("claude-haiku-4-5")',  b'/claude-haiku-4[.-]5/.test(H) '),
+            ]
+            for old, new in replacements:
+                if len(old) != len(new):
+                    continue
+                i = 0
+                while True:
+                    pos = data.find(old, i)
+                    if pos == -1:
+                        break
+                    i = pos + 1
+                    results.append(
+                        {
+                            "patch_id": p["id"],
+                            "name": p["name"],
+                            "offset": pos,
+                            "length": len(old),
+                            "old": old,
+                            "new": new,
+                        }
+                    )
         else:
             anchor = p["anchor"]
             i = 0
@@ -714,6 +752,9 @@ def count_patch_status(data: bytes) -> dict:
             status[p["id"]] = "pending" if n > 0 else "applied"
         elif p.get("special") == "er_no_downgrade":
             n = data.count(b'if(T==="xhigh"&&!VcH(H))return"high";')
+            status[p["id"]] = "pending" if n > 0 else "applied"
+        elif p.get("special") == "hm_normalize_dot":
+            n = data.count(b'H.includes("claude-opus-4-7")')
             status[p["id"]] = "pending" if n > 0 else "applied"
         else:
             n = data.count(p["anchor"])
