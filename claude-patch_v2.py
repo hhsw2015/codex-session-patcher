@@ -436,6 +436,13 @@ PATCHES = [
         "desc": "vx() 直接返回 true, 绕过 v0+VcH(model) 模型能力判定 (任何模型可启 ultracode)",
         "special": "force_vx_true",
     },
+    {
+        "id": 26,
+        "name": "er() xhigh 不降级",
+        "layer": "代码",
+        "desc": "去掉 er() 中 xhigh→high 降级逻辑, 让 ultracode 状态在 /effort 显示正确",
+        "special": "er_no_downgrade",
+    },
     # #20 已移除: dangerous_shell_prefix -- 保护用户免受恶意 repo 注入,
     # 不属于"模型拒绝用户指令", 保留。
 ]
@@ -590,6 +597,28 @@ def find_all_patch_locations(data):
                         "new": new,
                     }
                 )
+        elif p.get("special") == "er_no_downgrade":
+            # er() 中 'if(T==="xhigh"&&!VcH(H))return"high";' → 注释掉
+            old = b'if(T==="xhigh"&&!VcH(H))return"high";'
+            new = b'/*xhigh-no-downgrade-patch---------*/'
+            if len(old) != len(new):
+                continue
+            i = 0
+            while True:
+                pos = data.find(old, i)
+                if pos == -1:
+                    break
+                i = pos + 1
+                results.append(
+                    {
+                        "patch_id": p["id"],
+                        "name": p["name"],
+                        "offset": pos,
+                        "length": len(old),
+                        "old": old,
+                        "new": new,
+                    }
+                )
         else:
             anchor = p["anchor"]
             i = 0
@@ -682,6 +711,9 @@ def count_patch_status(data: bytes) -> dict:
             status[p["id"]] = "pending" if n > 0 else "applied"
         elif p.get("special") == "force_vx_true":
             n = data.count(b'function vx(H){return v0()&&(H===void 0||VcH(H))}')
+            status[p["id"]] = "pending" if n > 0 else "applied"
+        elif p.get("special") == "er_no_downgrade":
+            n = data.count(b'if(T==="xhigh"&&!VcH(H))return"high";')
             status[p["id"]] = "pending" if n > 0 else "applied"
         else:
             n = data.count(p["anchor"])
