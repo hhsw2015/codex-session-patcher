@@ -461,77 +461,87 @@ def find_all_patch_locations(data):
         elif p.get("special") == "danger_table_skip":
             continue
         elif p.get("special") == "force_v0_true":
-            # 直接强制 v0() 返回 true (绕过整条判定链)
-            old = b'function v0(){if($K6())return!1;if(!q67())return!1;let{available:H,defaultOn:_}=$P8();if(!H)return!1;return UX5()??_}'
-            new = b'function v0(){return!0/*                                                                                          */}'
-            if len(old) != len(new):
-                continue
-            i = 0
-            while True:
-                pos = data.find(old, i)
-                if pos == -1:
-                    break
-                i = pos + 1
+            # 强制 dynamic-workflow 入口函数返回 true (函数名 minified, 用结构特征)
+            rx = re.compile(
+                rb'function (\w{1,5})\(\)\{if\(\w{1,5}\(\)\)return!1;if\(!\w{1,5}\(\)\)return!1;let\{available:\w,defaultOn:\w\}=[\w$]+\(\);if\(![\w$]+\)return!1;return [\w$]+\(\)\?\?[\w$]+\}'
+            )
+            for m in rx.finditer(data):
+                orig = m.group(0)
+                fname = m.group(1)
+                new_body = b"function " + fname + b"(){return!0/*"
+                new_tail = b"*/}"
+                pad_len = len(orig) - len(new_body) - len(new_tail)
+                if pad_len < 0:
+                    continue
+                new = new_body + b" " * pad_len + new_tail
+                if len(new) != len(orig):
+                    continue
                 results.append(
                     {
                         "patch_id": p["id"],
                         "name": p["name"],
-                        "offset": pos,
-                        "length": len(old),
-                        "old": old,
+                        "offset": m.start(),
+                        "length": len(orig),
+                        "old": orig,
                         "new": new,
                     }
                 )
         elif p.get("special") == "er_no_downgrade":
-            # er() 中 'if(T==="xhigh"&&!VcH(H))return"high";' → 注释掉
-            old = b'if(T==="xhigh"&&!VcH(H))return"high";'
-            new = b'/*xhigh-no-downgrade-patch---------*/'
-            if len(old) != len(new):
-                continue
-            i = 0
-            while True:
-                pos = data.find(old, i)
-                if pos == -1:
-                    break
-                i = pos + 1
+            # if(T==="xhigh"&&!VcH(H))return"high";  -- VcH 名字会变, 用通配
+            rx = re.compile(
+                rb'if\(([\w$]{1,5})==="xhigh"&&!([\w$]{1,5})\(([\w$]{1,5})\)\)return"high";'
+            )
+            for m in rx.finditer(data):
+                orig = m.group(0)
+                # 替换为等长注释
+                new = b"/*" + b"x" * (len(orig) - 4) + b"*/"
+                if len(new) != len(orig):
+                    continue
                 results.append(
                     {
                         "patch_id": p["id"],
                         "name": p["name"],
-                        "offset": pos,
-                        "length": len(old),
-                        "old": old,
+                        "offset": m.start(),
+                        "length": len(orig),
+                        "old": orig,
                         "new": new,
                     }
                 )
         elif p.get("special") == "hm_normalize_dot":
-            # HM 中 H.includes("claude-X-4-Y") 改为正则 /claude-X-4[.-]Y/.test(H)
-            replacements = [
-                (b'H.includes("claude-opus-4-8")',   b'/claude-opus-4[.-]8/.test(H) '),
-                (b'H.includes("claude-opus-4-7")',   b'/claude-opus-4[.-]7/.test(H) '),
-                (b'H.includes("claude-opus-4-6")',   b'/claude-opus-4[.-]6/.test(H) '),
-                (b'H.includes("claude-opus-4-5")',   b'/claude-opus-4[.-]5/.test(H) '),
-                (b'H.includes("claude-opus-4-1")',   b'/claude-opus-4[.-]1/.test(H) '),
-                (b'H.includes("claude-sonnet-4-6")', b'/claude-sonnet-4[.-]6/.test(H) '),
-                (b'H.includes("claude-sonnet-4-5")', b'/claude-sonnet-4[.-]5/.test(H) '),
-                (b'H.includes("claude-haiku-4-5")',  b'/claude-haiku-4[.-]5/.test(H) '),
+            # HM 中 X.includes("claude-...-4-Y") 改为正则 /claude-...-4[.-]Y/.test(X)
+            # 参数名 X 可能 minified, 不写死
+            model_keys = [
+                (b"opus-4-8", b"opus-4[.-]8"),
+                (b"opus-4-7", b"opus-4[.-]7"),
+                (b"opus-4-6", b"opus-4[.-]6"),
+                (b"opus-4-5", b"opus-4[.-]5"),
+                (b"opus-4-1", b"opus-4[.-]1"),
+                (b"sonnet-4-6", b"sonnet-4[.-]6"),
+                (b"sonnet-4-5", b"sonnet-4[.-]5"),
+                (b"haiku-4-5", b"haiku-4[.-]5"),
             ]
-            for old, new in replacements:
-                if len(old) != len(new):
-                    continue
-                i = 0
-                while True:
-                    pos = data.find(old, i)
-                    if pos == -1:
-                        break
-                    i = pos + 1
+            for old_seg, new_seg in model_keys:
+                rx = re.compile(
+                    rb'(\w)\.includes\("claude-' + re.escape(old_seg) + rb'"\)'
+                )
+                for m in rx.finditer(data):
+                    orig = m.group(0)
+                    var = m.group(1)
+                    # 新形式: /claude-opus-4[.-]7/.test(H) + 空格填充等长
+                    new_core = b"/claude-" + new_seg + b"/.test(" + var + b")"
+                    pad = len(orig) - len(new_core)
+                    if pad < 0:
+                        continue
+                    new = new_core + b" " * pad
+                    if len(new) != len(orig):
+                        continue
                     results.append(
                         {
                             "patch_id": p["id"],
                             "name": p["name"],
-                            "offset": pos,
-                            "length": len(old),
-                            "old": old,
+                            "offset": m.start(),
+                            "length": len(orig),
+                            "old": orig,
                             "new": new,
                         }
                     )
@@ -613,13 +623,19 @@ def count_patch_status(data: bytes) -> dict:
         elif p.get("special") == "danger_table_skip":
             continue
         elif p.get("special") == "force_v0_true":
-            n = data.count(b'function v0(){if($K6())return!1;if(!q67())')
+            n = len(re.findall(
+                rb'function \w{1,5}\(\)\{if\(\w{1,5}\(\)\)return!1;if\(!\w{1,5}\(\)\)return!1;let\{available:\w,defaultOn:\w\}=[\w$]+\(\);if\(![\w$]+\)return!1;return [\w$]+\(\)\?\?[\w$]+\}',
+                data,
+            ))
             status[p["id"]] = "pending" if n > 0 else "applied"
         elif p.get("special") == "er_no_downgrade":
-            n = data.count(b'if(T==="xhigh"&&!VcH(H))return"high";')
+            n = len(re.findall(
+                rb'if\([\w$]{1,5}==="xhigh"&&![\w$]{1,5}\([\w$]{1,5}\)\)return"high";',
+                data,
+            ))
             status[p["id"]] = "pending" if n > 0 else "applied"
         elif p.get("special") == "hm_normalize_dot":
-            n = data.count(b'H.includes("claude-opus-4-7")')
+            n = len(re.findall(rb'\w\.includes\("claude-opus-4-7"\)', data))
             status[p["id"]] = "pending" if n > 0 else "applied"
         else:
             n = data.count(p["anchor"])
