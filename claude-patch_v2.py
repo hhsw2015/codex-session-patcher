@@ -408,6 +408,13 @@ PATCHES = [
         "desc": "让 claude-opus-4.X 等同 4-X (同时识别两种格式, 解锁 ultracode/effort)",
         "special": "model_id_format",
     },
+    {
+        "id": 22,
+        "name": "allow_workflows feature flag",
+        "layer": "代码",
+        "desc": "q67() 强制返回 true, 解锁 dynamic workflows / ultracode (绕过后端 feature flag)",
+        "special": "allow_workflows",
+    },
     # #20 已移除: dangerous_shell_prefix -- 保护用户免受恶意 repo 注入,
     # 不属于"模型拒绝用户指令", 保留。
 ]
@@ -474,6 +481,28 @@ def find_all_patch_locations(data):
                             "new": new,
                         }
                     )
+        elif p.get("special") == "allow_workflows":
+            # q67() 后端 feature flag 检查 → 强制返回 true
+            old = b'function q67(){return V7("allow_workflows")}'
+            new = b'function q67(){return!0                    }'
+            if len(old) != len(new):
+                continue
+            i = 0
+            while True:
+                pos = data.find(old, i)
+                if pos == -1:
+                    break
+                i = pos + 1
+                results.append(
+                    {
+                        "patch_id": p["id"],
+                        "name": p["name"],
+                        "offset": pos,
+                        "length": len(old),
+                        "old": old,
+                        "new": new,
+                    }
+                )
         else:
             anchor = p["anchor"]
             i = 0
@@ -554,6 +583,9 @@ def count_patch_status(data: bytes) -> dict:
         elif p.get("special") == "model_id_format":
             # 检测原始 q==="claude-opus-4-7" 模式 (任一存在 = 未 patch)
             n = data.count(b'q==="claude-opus-4-7"')
+            status[p["id"]] = "pending" if n > 0 else "applied"
+        elif p.get("special") == "allow_workflows":
+            n = data.count(b'function q67(){return V7("allow_workflows")}')
             status[p["id"]] = "pending" if n > 0 else "applied"
         else:
             n = data.count(p["anchor"])
