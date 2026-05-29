@@ -401,6 +401,13 @@ PATCHES = [
         "tail_search_max": 200,
         "include_tail": True,
     },
+    {
+        "id": 21,
+        "name": "模型ID点格式兼容 (4.7=4-7)",
+        "layer": "代码",
+        "desc": "让 claude-opus-4.X 等同 4-X (同时识别两种格式, 解锁 ultracode/effort)",
+        "special": "model_id_format",
+    },
     # #20 已移除: dangerous_shell_prefix -- 保护用户免受恶意 repo 注入,
     # 不属于"模型拒绝用户指令", 保留。
 ]
@@ -439,6 +446,34 @@ def find_all_patch_locations(data):
                 )
         elif p.get("special") == "danger_table_skip":
             continue
+        elif p.get("special") == "model_id_format":
+            # 把 q==="claude-(opus|sonnet)-4-X" 改为 /(opus|sonnet)-4[.-]X/.test(q)
+            # 等长替换, 让 . 和 - 格式都能匹配
+            replacements = [
+                (b'q==="claude-opus-4-8"', b'/opus-4[.-]8/.test(q)'),
+                (b'q==="claude-opus-4-7"', b'/opus-4[.-]7/.test(q)'),
+                (b'q==="claude-opus-4-6"', b'/opus-4[.-]6/.test(q)'),
+                (b'q==="claude-sonnet-4-6"', b'/sonnet-4[.-]6/.test(q)'),
+            ]
+            for old, new in replacements:
+                if len(old) != len(new):
+                    continue
+                i = 0
+                while True:
+                    pos = data.find(old, i)
+                    if pos == -1:
+                        break
+                    i = pos + 1
+                    results.append(
+                        {
+                            "patch_id": p["id"],
+                            "name": p["name"],
+                            "offset": pos,
+                            "length": len(old),
+                            "old": old,
+                            "new": new,
+                        }
+                    )
         else:
             anchor = p["anchor"]
             i = 0
@@ -516,6 +551,10 @@ def count_patch_status(data: bytes) -> dict:
             status[p["id"]] = "pending" if n > 0 else "applied"
         elif p.get("special") == "danger_table_skip":
             continue
+        elif p.get("special") == "model_id_format":
+            # 检测原始 q==="claude-opus-4-7" 模式 (任一存在 = 未 patch)
+            n = data.count(b'q==="claude-opus-4-7"')
+            status[p["id"]] = "pending" if n > 0 else "applied"
         else:
             n = data.count(p["anchor"])
             status[p["id"]] = "pending" if n > 0 else "applied"
