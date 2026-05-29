@@ -429,6 +429,13 @@ PATCHES = [
         "desc": "v0() 直接返回 true, 绕过 disableWorkflows/feature flag/settings 整条判定链",
         "special": "force_v0_true",
     },
+    {
+        "id": 25,
+        "name": "vx() 强制 ultracode 资格通过",
+        "layer": "代码",
+        "desc": "vx() 直接返回 true, 绕过 v0+VcH(model) 模型能力判定 (任何模型可启 ultracode)",
+        "special": "force_vx_true",
+    },
     # #20 已移除: dangerous_shell_prefix -- 保护用户免受恶意 repo 注入,
     # 不属于"模型拒绝用户指令", 保留。
 ]
@@ -561,6 +568,28 @@ def find_all_patch_locations(data):
                         "new": new,
                     }
                 )
+        elif p.get("special") == "force_vx_true":
+            # vx() 直接返回 true, 绕过模型能力检查 (VcH)
+            old = b'function vx(H){return v0()&&(H===void 0||VcH(H))}'
+            new = b'function vx(H){return!0/*                     */}'
+            if len(old) != len(new):
+                continue
+            i = 0
+            while True:
+                pos = data.find(old, i)
+                if pos == -1:
+                    break
+                i = pos + 1
+                results.append(
+                    {
+                        "patch_id": p["id"],
+                        "name": p["name"],
+                        "offset": pos,
+                        "length": len(old),
+                        "old": old,
+                        "new": new,
+                    }
+                )
         else:
             anchor = p["anchor"]
             i = 0
@@ -650,6 +679,9 @@ def count_patch_status(data: bytes) -> dict:
             status[p["id"]] = "pending" if n > 0 else "applied"
         elif p.get("special") == "force_v0_true":
             n = data.count(b'function v0(){if($K6())return!1;if(!q67())')
+            status[p["id"]] = "pending" if n > 0 else "applied"
+        elif p.get("special") == "force_vx_true":
+            n = data.count(b'function vx(H){return v0()&&(H===void 0||VcH(H))}')
             status[p["id"]] = "pending" if n > 0 else "applied"
         else:
             n = data.count(p["anchor"])
