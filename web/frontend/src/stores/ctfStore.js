@@ -51,10 +51,10 @@ export const useCTFStore = defineStore('ctf', {
     },
 
     // 安装 CTF 配置
-    async install() {
+    async install(injectionMode = 'append') {
       this.installLoading = true
       try {
-        const response = await api.post('/ctf/install')
+        const response = await api.post('/ctf/install', { injection_mode: injectionMode })
         if (response.success && response.status) {
           this.status = response.status
         }
@@ -83,10 +83,10 @@ export const useCTFStore = defineStore('ctf', {
     },
 
     // 启用全局模式 (Codex)
-    async installGlobal() {
+    async installGlobal(injectionMode = 'append') {
       this.globalInstallLoading = true
       try {
-        const response = await api.post('/ctf/global/install')
+        const response = await api.post('/ctf/global/install', { injection_mode: injectionMode })
         if (response.success && response.status) {
           this.status = response.status
         }

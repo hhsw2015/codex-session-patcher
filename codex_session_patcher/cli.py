@@ -12,6 +12,9 @@ from datetime import datetime
 
 import json as _json
 
+from .output import safe_print
+
+print = safe_print
 from .core import (
     RefusalDetector,
     SessionParser,
@@ -49,6 +52,7 @@ def handle_ctf_status():
     print('\n[Codex CLI]')
     if status.installed:
         print('  状态: ✅ 已安装')
+        print(f'  注入方式: {"追加规则" if status.injection_mode == "append" else "替换内置提示词"}')
         print(f'  配置文件: {status.config_path}')
         print(f'  Prompt 文件: {status.prompt_path}')
         print('  激活命令: codex -p ctf')
@@ -82,13 +86,13 @@ def handle_ctf_status():
     print('注意: 修改后需要新开会话才能生效')
 
 
-def handle_ctf_install():
+def handle_ctf_install(injection_mode: str = "append"):
     """安装 Codex CTF 配置"""
     from .ctf_config import CTFConfigInstaller
     installer = CTFConfigInstaller()
 
     print('正在安装 Codex 安全测试配置...')
-    success, message = installer.install()
+    success, message = installer.install(injection_mode=injection_mode)
 
     if success:
         print(f'✅ {message}')
@@ -301,6 +305,8 @@ def main():
     parser.add_argument('--install-ctf-config', action='store_true', help='安装 Codex 安全测试配置')
     parser.add_argument('--uninstall-ctf-config', action='store_true', help='卸载 Codex 安全测试配置')
     parser.add_argument('--ctf-status', action='store_true', help='查看安全测试配置状态（Codex + Claude Code）')
+    parser.add_argument('--ctf-injection-mode', choices=['append', 'replace'], default='append',
+                        help='Codex 提示词注入方式：append 追加规则，replace 替换内置提示词 (默认: append)')
     # CTF 配置参数 — Claude Code
     parser.add_argument('--install-claude-ctf', action='store_true', help='安装 Claude Code 安全测试配置')
     parser.add_argument('--uninstall-claude-ctf', action='store_true', help='卸载 Claude Code 安全测试配置')
@@ -319,7 +325,7 @@ def main():
         return
 
     if args.install_ctf_config:
-        handle_ctf_install()
+        handle_ctf_install(args.ctf_injection_mode)
         return
 
     if args.uninstall_ctf_config:
@@ -353,7 +359,7 @@ def main():
             from web.backend.main import run_server
             run_server(host=args.host, port=args.port)
         except ImportError:
-            print('错误: Web 依赖未安装，请运行: pip install -e ".[web]"')
+            print(f'错误: Web 依赖未安装，请运行: {sys.executable} -m pip install -e ".[web]"')
             sys.exit(1)
         return
 

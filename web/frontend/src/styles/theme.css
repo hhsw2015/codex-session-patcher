@@ -4,12 +4,14 @@
   --color-primary: #18a058;
   --color-primary-hover: #36ad6a;
   --color-primary-pressed: #0c7a43;
+  --color-primary-soft: rgba(24, 160, 88, 0.12);
 
   /* 背景色 */
   --color-bg-1: #1a1a1a;
   --color-bg-2: #2d2d2d;
   --color-bg-3: #3a3a3a;
   --color-bg-4: #4a4a4a;
+  --color-overlay: rgba(0, 0, 0, 0.5);
 
   /* 文字色 */
   --color-text-1: #ffffff;

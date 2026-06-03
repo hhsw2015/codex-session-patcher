@@ -34,13 +34,14 @@ AI coding tools (Codex, Claude Code, OpenCode) frequently refuse security-relate
 ### Session Cleaning
 - **Smart Detection** — Two-level refusal detection (strong phrase full-text match + weak keyword prefix match), low false positive rate
 - **AI Rewrite** — Call LLM to generate context-aware replacement responses (supports OpenAI / Ollama / OpenRouter compatible APIs)
+- **Safe Fallbacks** — Clean historical Codex refusals that only contain `event_msg`; fall back to a safe default when AI returns question-mark mojibake
 - **Batch Cleaning** — Process all refusal responses in a session, not just the last one
 - **Reasoning Erasure** — Remove encrypted Reasoning / Thinking block content
 - **Backup & Restore** — Auto-backup before cleaning, one-click restore to any historical version
 - **Diff View** — Side-by-side before/after comparison
 
 ### CTF/Pentest Prompt Injection
-- **Codex Profile Mode** — Create a `ctf` profile, only active when launched with `codex -p ctf`, doesn't affect normal sessions
+- **Codex Profile Mode** — Create the new `ctf.config.toml` profile, only active when launched with `codex -p ctf`, doesn't affect normal sessions
 - **Codex Global Mode** — Inject into global config, automatically active for all new sessions
 - **Claude Code Workspace** — Create dedicated CTF workspace `~/.claude-ctf-workspace` with project-level CLAUDE.md injection
 - **OpenCode Workspace** — Create dedicated CTF workspace `~/.opencode-ctf-workspace` with AGENTS.md injection
@@ -69,13 +70,23 @@ AI coding tools (Codex, Claude Code, OpenCode) frequently refuse security-relate
 git clone https://github.com/ryfineZ/codex-session-patcher.git
 cd codex-session-patcher
 
-# CLI only (zero extra dependencies)
-pip install -e .
-
-# With Web UI
-pip install -e ".[web]"
-cd web/frontend && npm install && npm run build && cd ../..
+# CLI install (auto-detects Python 3.8+)
+./scripts/install.sh
 ```
+
+The Web UI launchers `./scripts/start-web.sh` and `./scripts/dev-web.sh` also auto-detect a compatible Python 3.8+ interpreter, first trying generic launchers from the current environment such as `python3` or `python`, then falling back to versioned commands or `py -3`, and only install/build when dependencies or frontend assets are actually out of date.
+If you really need a manual editable install, run `-m pip install -e ...` with whatever Python 3.8+ launcher already exists on your machine; on Windows that is often `py -3`, while other environments may use `python3.12`, `python3`, or `python`.
+On Windows Git Bash / MSYS / MINGW / Cygwin, the project launch scripts automatically set `PYTHONIOENCODING=utf-8` for Python child processes to reduce question-mark mojibake from GBK console encoding in local AI proxies or the Web backend.
+
+Cooperation-intent form submissions from the Web UI cooperation page are sent to the author's hosted Muggle Leads service (`https://leads.3jiezhiwai.com`). Local users do not need to deploy Cloudflare or configure a submission endpoint.
+
+If you fork this project and want submissions to go to your own service, override the remote endpoint before starting the Web service:
+
+```bash
+export MUGGLE_LEADS_ENDPOINT="https://your-worker-domain/api/sources/codex-session-patcher/intents"
+```
+
+Telegram Bot tokens and admin secrets are configured only in the author's hosted Cloudflare Worker, never in the local tool or frontend code.
 
 ---
 
@@ -86,9 +97,6 @@ cd web/frontend && npm install && npm run build && cd ../..
 ```bash
 # Production mode
 ./scripts/start-web.sh
-
-# Or directly
-uvicorn web.backend.main:app --host 127.0.0.1 --port 8080
 ```
 
 Visit `http://localhost:8080`
@@ -97,6 +105,11 @@ Visit `http://localhost:8080`
 ```bash
 ./scripts/dev-web.sh
 ```
+
+Notes:
+- The production script only installs Python deps, installs frontend deps, or rebuilds the frontend when one of those steps is actually needed.
+- If the frontend build output is already ready to serve, the production script does not require `node` or `npm` or reinstall frontend dependencies just to start.
+- The development script also skips repeated installs; if port `3000` is already occupied, it will automatically pick the next available frontend port.
 
 ### CLI
 
@@ -162,6 +175,7 @@ codex-patcher --rewrite "Help me write a reverse analysis script"
 | `--host` | Web UI listen address (default 127.0.0.1) |
 | `--port` | Web UI port (default 8080) |
 | `--install-ctf-config` | Install Codex CTF config |
+| `--ctf-injection-mode append\|replace` | Choose Codex injection mode, defaults to append |
 | `--uninstall-ctf-config` | Uninstall Codex CTF config |
 | `--install-claude-ctf` | Install Claude Code CTF config |
 | `--uninstall-claude-ctf` | Uninstall Claude Code CTF config |
@@ -180,6 +194,9 @@ codex-patcher --rewrite "Help me write a reverse analysis script"
 1. Install CTF Profile
    codex-patcher --install-ctf-config
 
+   # Strong CTF scenarios can replace Codex built-in instructions
+   codex-patcher --install-ctf-config --ctf-injection-mode replace
+
 2. Launch with CTF profile (doesn't affect normal sessions)
    codex -p ctf
 
@@ -188,6 +205,22 @@ codex-patcher --rewrite "Help me write a reverse analysis script"
 4. Resume
    codex resume
 ```
+
+The installer writes the new Codex profile file:
+
+- macOS/Linux: `~/.codex/ctf.config.toml`
+- Windows: `%USERPROFILE%\.codex\ctf.config.toml`
+
+To support Codex CLI 0.134.0 and newer, install removes legacy `profile = "ctf"`, `[profiles.ctf]`, and `[profiles.ctf.*]` entries from `config.toml`, preventing `codex -p ctf` from failing with a legacy profile error. Profile mode and global mode both support appending rules or replacing Codex built-in instructions. Disabling global mode removes the marker and settings managed by this tool.
+
+Codex supports two injection modes:
+
+- Append rules by default: writes `developer_instructions`, preserving Codex built-in instructions. Use this for daily security testing.
+- Replace built-in instructions: writes `model_instructions_file` pointing at the prompt file. Use this for strong CTF scenarios; it takes over Codex built-in instructions.
+
+The two modes are mutually exclusive. The Web UI lets you choose the injection mode when enabling Profile or Global mode; the CLI supports `--ctf-injection-mode append|replace`.
+
+Global mode only manages the block marked with `# __csp_ctf_global__`. If `config.toml` already has a user-managed top-level `developer_instructions` or `model_instructions_file`, the installer refuses to enable global mode to avoid overwriting user settings or creating duplicate keys. Remove or migrate the existing top-level instruction setting first.
 
 ### Claude Code
 

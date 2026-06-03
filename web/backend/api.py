@@ -12,7 +12,8 @@ import shutil
 from datetime import datetime
 from typing import Optional
 from pathlib import Path
-from fastapi import APIRouter, HTTPException, WebSocket, WebSocketDisconnect
+import httpx
+from fastapi import APIRouter, HTTPException, Request, WebSocket, WebSocketDisconnect
 from fastapi.responses import JSONResponse
 
 import sqlite3
@@ -29,6 +30,7 @@ from .schemas import (
     ConversationTurn, ToolUseBlock,
     DeleteMessagesRequest, DeleteMessagesResponse, ScanSessionResponse,
     SingleRewriteRequest, SingleRewriteResponse, GroupActionRequest,
+    CTFInstallRequest, CooperationIntentRequest, CooperationIntentResponse,
 )
 
 
@@ -102,6 +104,7 @@ try:
 except ImportError:
     SessionWatcher = None
 from codex_session_patcher.core.sqlite_adapter import OpenCodeDBAdapter, DEFAULT_OPENCODE_DB
+from codex_session_patcher import __version__
 
 logger = logging.getLogger(__name__)
 
@@ -112,6 +115,69 @@ DEFAULT_SESSION_DIR = os.path.expanduser("~/.codex/sessions/")
 DEFAULT_CLAUDE_SESSION_DIR = os.path.expanduser("~/.claude/projects/")
 DEFAULT_MEMORY_FILE = os.path.expanduser("~/.codex/memories/MEMORY.md")
 DEFAULT_CONFIG_FILE = os.path.expanduser("~/.codex-patcher/config.json")
+
+COOPERATION_TYPE_LABELS = {
+    "ads": "广告位出租",
+    "development": "项目开发合作",
+    "token_supply": "AI 中转站 Token 批发供应",
+    "other": "其他",
+}
+
+DEFAULT_MUGGLE_LEADS_ENDPOINT = "https://leads.3jiezhiwai.com/api/sources/codex-session-patcher/intents"
+
+
+@router.get("/version")
+async def get_version():
+    """返回当前应用版本。"""
+    return {"version": __version__}
+
+
+def _build_cooperation_payload(body: CooperationIntentRequest, client_host: str) -> dict:
+    return {
+        "source_id": os.environ.get("MUGGLE_LEADS_SOURCE_ID", "codex-session-patcher").strip() or "codex-session-patcher",
+        "source_name": os.environ.get("MUGGLE_LEADS_SOURCE_NAME", "Codex Session Patcher").strip() or "Codex Session Patcher",
+        "source_version": __version__,
+        "intent_type": body.intent_type,
+        "intent_type_label": COOPERATION_TYPE_LABELS.get(body.intent_type, body.intent_type),
+        "name": body.name,
+        "contact": body.contact,
+        "message": body.message,
+        "client": client_host,
+    }
+
+
+async def _submit_to_muggle_leads(payload: dict):
+    endpoint = os.environ.get("MUGGLE_LEADS_ENDPOINT", DEFAULT_MUGGLE_LEADS_ENDPOINT).strip()
+    if not endpoint:
+        raise HTTPException(
+            status_code=503,
+            detail="合作意向提交地址未配置，请直接通过 QQ / 微信 / TG 联系",
+        )
+
+    try:
+        async with httpx.AsyncClient(timeout=10) as client:
+            response = await client.post(endpoint, json=payload)
+    except httpx.RequestError as exc:
+        logger.warning("提交合作意向到 Muggle Leads 失败", exc_info=True)
+        raise HTTPException(status_code=502, detail="提交失败，请直接通过 QQ / 微信 / TG 联系") from exc
+
+    try:
+        data = response.json()
+    except ValueError as exc:
+        raise HTTPException(status_code=502, detail="提交失败，请直接通过 QQ / 微信 / TG 联系") from exc
+
+    if response.status_code >= 400 or data.get("success") is not True:
+        detail = data.get("message") or data.get("detail") or "提交失败，请直接通过 QQ / 微信 / TG 联系"
+        logger.warning("Muggle Leads 返回提交失败: %s %s", response.status_code, data)
+        raise HTTPException(status_code=502, detail=detail)
+
+
+@router.post("/cooperation/intent", response_model=CooperationIntentResponse)
+async def submit_cooperation_intent(body: CooperationIntentRequest, request: Request):
+    """提交合作意向到远程 Muggle Leads 服务。"""
+    client_host = request.client.host if request.client else "unknown"
+    await _submit_to_muggle_leads(_build_cooperation_payload(body, client_host))
+    return CooperationIntentResponse(success=True, message="已提交，我会尽快联系你。")
 
 
 # ─── WebSocket 连接管理 ──────────────────────────────────────────────────────
@@ -591,8 +657,11 @@ def preview_session(file_path: str, mock_response: str = MOCK_RESPONSE,
         refusal_keywords_map[idx] = matches
         if msg.get('type') == 'event_msg':
             # 冗余副本：挂到最近的 primary 下
-            if primary_order:
+            if primary_order and parsed_lines[primary_order[-1]].get('type') != 'event_msg':
                 refusal_groups[primary_order[-1]].append(idx)
+            else:
+                refusal_groups[idx] = []
+                primary_order.append(idx)
         else:
             refusal_groups[idx] = []
             primary_order.append(idx)
@@ -1689,6 +1758,8 @@ async def _build_ctf_status_response() -> CTFStatusResponse:
         prompt_exists=status.prompt_exists,
         profile_available=status.profile_available,
         global_installed=status.global_installed,
+        injection_mode=status.injection_mode,
+        global_injection_mode=status.global_injection_mode,
         config_path=status.config_path,
         prompt_path=status.prompt_path,
         claude_installed=status.claude_installed,
@@ -1711,11 +1782,12 @@ async def get_ctf_status():
 
 
 @router.post("/ctf/install", response_model=CTFInstallResponse)
-async def install_ctf_config():
+async def install_ctf_config(body: Optional[CTFInstallRequest] = None):
     """安装 CTF 配置"""
     from codex_session_patcher.ctf_config import CTFConfigInstaller
     installer = CTFConfigInstaller()
-    success, message = installer.install()
+    injection_mode = body.injection_mode if body else "append"
+    success, message = installer.install(injection_mode=injection_mode)
 
     await manager.broadcast(WSMessage(
         type="log",
@@ -1751,11 +1823,12 @@ async def uninstall_ctf_config():
 
 
 @router.post("/ctf/global/install", response_model=CTFInstallResponse)
-async def install_ctf_global():
+async def install_ctf_global(body: Optional[CTFInstallRequest] = None):
     """启用 CTF 全局模式"""
     from codex_session_patcher.ctf_config import CTFConfigInstaller
     installer = CTFConfigInstaller()
-    success, message = installer.install_global()
+    injection_mode = body.injection_mode if body else "append"
+    success, message = installer.install_global(injection_mode=injection_mode)
 
     await manager.broadcast(WSMessage(
         type="log",
@@ -1923,10 +1996,97 @@ def _get_codex_prompt_path_for_file(filename: str) -> str:
     return os.path.join(os.path.expanduser("~/.codex/prompts"), os.path.basename(filename))
 
 
-def _sync_codex_profile_prompt_file(filename: str):
-    """同步 [profiles.ctf].model_instructions_file 到指定内置模板文件"""
+def _unescape_toml_basic_string(value: str) -> str:
+    """解码本工具写入的 TOML basic string 转义。"""
+    replacements = {
+        'b': '\b',
+        't': '\t',
+        'n': '\n',
+        'f': '\f',
+        'r': '\r',
+        '"': '"',
+        '\\': '\\',
+    }
+    result = []
+    index = 0
+    while index < len(value):
+        char = value[index]
+        if char == '\\' and index + 1 < len(value):
+            index += 1
+            result.append(replacements.get(value[index], value[index]))
+        else:
+            result.append(char)
+        index += 1
+    return ''.join(result)
+
+
+def _extract_developer_instructions(content: str) -> str | None:
+    """从 TOML 文本中读取 developer_instructions。"""
+    multiline = re.search(r'(?m)^\s*developer_instructions\s*=\s*"""', content)
+    if multiline:
+        start = multiline.end()
+        if content.startswith('\r\n', start):
+            start += 2
+        elif content.startswith('\n', start):
+            start += 1
+
+        index = start
+        raw = []
+        while index < len(content):
+            if content.startswith('"""', index):
+                return _unescape_toml_basic_string(''.join(raw)).rstrip('\n')
+            raw.append(content[index])
+            index += 1
+        return None
+
+    single_line = re.search(r'(?m)^\s*developer_instructions\s*=\s*"((?:\\.|[^"\\])*)"', content)
+    if single_line:
+        return _unescape_toml_basic_string(single_line.group(1))
+
+    return None
+
+
+def _read_codex_developer_instructions() -> str | None:
+    """读取 Codex 当前实际生效的 developer_instructions。"""
+    from codex_session_patcher.ctf_config import check_ctf_status
+    status = check_ctf_status()
+    codex_dir = os.path.expanduser("~/.codex")
+    paths = []
+    if status.profile_available:
+        paths.append(os.path.join(codex_dir, "ctf.config.toml"))
+    if status.global_installed:
+        paths.append(os.path.join(codex_dir, "config.toml"))
+
+    for path in paths:
+        if not os.path.exists(path):
+            continue
+        try:
+            with open(path, "r", encoding="utf-8") as f:
+                value = _extract_developer_instructions(f.read())
+            if value is not None:
+                return value
+        except Exception:
+            logger.warning("读取 Codex developer_instructions 失败: %s", path, exc_info=True)
+
+    return None
+
+
+def _sync_codex_prompt_config(prompt: str, prompt_file: Optional[str] = None):
+    """同步已启用 Codex CTF 配置中的提示词配置。"""
     from codex_session_patcher.ctf_config import CTFConfigInstaller
-    CTFConfigInstaller()._update_config(os.path.basename(filename))
+    from codex_session_patcher.ctf_config import check_ctf_status
+    installer = CTFConfigInstaller()
+    status = check_ctf_status()
+    if status.profile_available:
+        if status.injection_mode == "append":
+            installer._update_config(prompt, prompt_file, "append")
+        elif prompt_file:
+            installer._update_config(prompt, prompt_file, "replace")
+    if status.global_installed:
+        if status.global_injection_mode == "append":
+            installer._update_global_config(prompt, prompt_file, "append")
+        elif prompt_file:
+            installer._update_global_config(prompt, prompt_file, "replace")
 
 
 def _codex_profile_available() -> bool:
@@ -1934,8 +2094,19 @@ def _codex_profile_available() -> bool:
     return check_ctf_status().profile_available
 
 
+def _codex_ctf_config_active() -> bool:
+    from codex_session_patcher.ctf_config import check_ctf_status
+    status = check_ctf_status()
+    return status.profile_available or status.global_installed
+
+
 def _read_ctf_prompt_for_tool(tool: str) -> str | None:
     """读取工具当前实际安装的 CTF 提示词，未安装时从配置中读取自定义内容，都没有则返回 None"""
+    if tool == 'codex':
+        prompt = _read_codex_developer_instructions()
+        if prompt is not None:
+            return prompt
+
     # 优先读已安装的实际文件
     path = _get_ctf_prompt_path(tool)
     if path and os.path.exists(path):
@@ -1966,6 +2137,15 @@ async def get_ctf_prompt(tool: str):
 
     prompt_path = _get_ctf_prompt_path(tool)
     default_prompt = _get_default_prompt(tool)
+    if tool == 'codex':
+        prompt = _read_codex_developer_instructions()
+        if prompt is not None:
+            return {
+                "prompt": prompt,
+                "is_installed": True,
+                "is_default": prompt.strip() == default_prompt.strip(),
+            }
+
     is_installed = bool(prompt_path and os.path.exists(prompt_path))
 
     # 已安装：读取实际文件
@@ -2013,10 +2193,10 @@ async def save_ctf_prompt(tool: str, body: dict):
             break
 
     should_write_installed = bool(prompt_path and os.path.exists(prompt_path))
-    if tool == 'codex' and _codex_profile_available():
+    if tool == 'codex' and _codex_ctf_config_active():
         if matched_file:
             prompt_path = _get_codex_prompt_path_for_file(matched_file)
-            _sync_codex_profile_prompt_file(matched_file)
+        _sync_codex_prompt_config(prompt, matched_file)
         should_write_installed = bool(prompt_path)
 
     # 已安装：写入对应文件
@@ -2050,10 +2230,10 @@ async def reset_ctf_prompt(tool: str):
     prompt_path = _get_ctf_prompt_path(tool)
     should_write_installed = bool(prompt_path and os.path.exists(prompt_path))
 
-    if tool == 'codex' and _codex_profile_available():
+    if tool == 'codex' and _codex_ctf_config_active():
         from codex_session_patcher.ctf_config.installer import CTFConfigInstaller
         prompt_path = _get_codex_prompt_path_for_file(CTFConfigInstaller.DEFAULT_PROMPT_FILE)
-        _sync_codex_profile_prompt_file(CTFConfigInstaller.DEFAULT_PROMPT_FILE)
+        _sync_codex_prompt_config(default_prompt, CTFConfigInstaller.DEFAULT_PROMPT_FILE)
         should_write_installed = True
 
     # 已安装：更新文件为默认

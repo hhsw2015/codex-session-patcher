@@ -9,6 +9,9 @@ from fastapi.staticfiles import StaticFiles
 from fastapi.middleware.cors import CORSMiddleware
 from contextlib import asynccontextmanager
 
+from codex_session_patcher import __version__
+from codex_session_patcher.output import safe_print
+
 # 修复 Windows 上 .js 文件 MIME 类型错误的问题
 mimetypes.add_type("application/javascript", ".js")
 mimetypes.add_type("text/css", ".css")
@@ -20,18 +23,18 @@ from .api import router, start_file_watcher, stop_file_watcher
 async def lifespan(app: FastAPI):
     """应用生命周期"""
     # 启动时
-    print("🚀 Codex Session Patcher Web UI 启动中...")
+    safe_print("🚀 Codex Session Patcher Web UI 启动中...")
     start_file_watcher()
     yield
     # 关闭时
     stop_file_watcher()
-    print("👋 Codex Session Patcher Web UI 已关闭")
+    safe_print("👋 Codex Session Patcher Web UI 已关闭")
 
 
 app = FastAPI(
     title="Codex Session Patcher",
     description="清理 AI 拒绝回复，恢复会话",
-    version="1.0.0",
+    version=__version__,
     lifespan=lifespan
 )
 
@@ -56,7 +59,7 @@ if os.path.exists(frontend_dist):
 def run_server(host: str = "127.0.0.1", port: int = 47832):
     """启动服务器"""
     import uvicorn
-    print(f"📍 访问地址: http://{host}:{port}")
+    safe_print(f"📍 访问地址: http://{host}:{port}")
     uvicorn.run(app, host=host, port=port)
 
 

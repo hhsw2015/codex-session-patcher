@@ -27,16 +27,11 @@ CLAUDE_CODE_CTF_OPTIMIZED = _load_prompt("claude_code_ctf_optimized.md")
 OPENCODE_CTF_OPTIMIZED = _load_prompt("opencode_ctf_optimized.md")
 
 
-# Codex config.toml 模板
-CTF_CONFIG_TEMPLATE = '''# Codex CLI 配置文件
-# 由 codex-session-patcher 生成
-
-# 默认配置（日常开发）
-model = "auto"
-
-# 安全测试模式
-[profiles.ctf]
-model_instructions_file = "~/.codex/prompts/ctf_optimized.md"
+# Codex profile v2 配置模板。Codex CLI 0.134.0+ 通过 ~/.codex/<name>.config.toml 加载 -p <name>。
+CTF_CONFIG_TEMPLATE = '''# Codex CTF profile managed by codex-session-patcher
+developer_instructions = """
+{prompt}
+"""
 '''
 
 

@@ -24,6 +24,7 @@ export default {
     disabled: 'Disabled',
     warning: 'Warning',
     info: 'Info',
+    version: 'Current version',
   },
 
   // Navigation
@@ -32,6 +33,7 @@ export default {
     enhance: 'CTF/Pentest',
     settings: 'Settings',
     help: 'Help',
+    cooperation: 'Cooperation',
   },
 
   // Session
@@ -120,6 +122,43 @@ export default {
     selectBackup: 'Select Backup',
   },
 
+  // Sponsor
+  sponsor: {
+    records: 'Donation Records',
+    noRecords: 'No public donation records yet. Be the first supporter.',
+  },
+
+  // Cooperation
+  cooperation: {
+    adsTitle: 'Ad Placement',
+    adsDesc: 'Wide-screen side spaces can be used for sponsored placements, suitable for developer tools, AI services, security courses, and cloud products. The first version only opens contact information; actual ad slots are confirmed case by case.',
+    adsTags: ['Developer Tools', 'AI Services', 'Security Courses', 'Cloud Services'],
+    devTitle: 'Project Development',
+    devDesc: 'Open to building practical tools and automation systems for real workflows, with a focus on clarity, maintainability, and delivery.',
+    devItems: ['AI tools and agent workflows', 'Automation scripts and data processing tools', 'Web tools, browser extensions, and internal productivity systems'],
+    tokenTitle: 'AI Gateway Token Wholesale',
+    tokenDesc: 'Wholesale AI gateway token cooperation for stable API usage, team quota needs, or channel partnerships.',
+    intentTitle: 'Submit Cooperation Intent',
+    intentType: 'Cooperation Type',
+    intentTypeAds: 'Ad Placement',
+    intentTypeDevelopment: 'Project Development',
+    intentTypeToken: 'AI Gateway Token Wholesale',
+    intentTypeOther: 'Other',
+    name: 'Name',
+    namePlaceholder: 'How should I address you?',
+    contact: 'Contact',
+    contactPlaceholder: 'QQ / WeChat / TG / email',
+    message: 'Request',
+    messagePlaceholder: 'Briefly describe what you want to cooperate on',
+    submit: 'Submit Intent',
+    submitDone: 'Submitted. I will contact you soon.',
+    submitFallback: 'Submit failed. Please contact me directly through QQ / WeChat / TG.',
+    contactTitle: 'Contact',
+    wechat: 'WeChat',
+    tgName: 'Muggle Community',
+    wechatCopied: 'WeChat ID copied: zyf_code',
+  },
+
   // Prompt Enhance
   enhance: {
     title: 'CTF/Pentest Mode',
@@ -146,6 +185,10 @@ export default {
     aiRewriteBtn: 'AI Rewrite',
     editPromptShared: 'CTF Prompt Template',
     ctfTemplateDesc: 'Select a prompt template to inject. The template is written to config when Profile or Global mode is enabled. After switching templates, click Save and re-enable to apply.',
+    codexInjectionMode: 'Codex injection',
+    codexInjectionAppend: 'Append injection (developer_instructions)',
+    codexInjectionReplace: 'Replace system prompt (model_instructions)',
+    codexInjectionReplaceWarning: 'Replace mode takes over Codex built-in instructions. Use it for strong CTF scenarios; append mode is safer for daily work.',
     targetPlatform: 'Target Platform',
     originalPrompt: 'Original Request',
     originalPromptPlaceholder: 'Enter a request that might be refused...',

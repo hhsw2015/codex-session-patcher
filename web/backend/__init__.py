@@ -2,4 +2,6 @@
 Codex Session Patcher Web Backend
 """
 
-__version__ = "1.0.0"
+from codex_session_patcher import __version__
+
+__all__ = ["__version__"]

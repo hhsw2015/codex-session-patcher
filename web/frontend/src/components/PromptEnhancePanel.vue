@@ -39,6 +39,22 @@
 
               <n-divider style="margin: 4px 0" />
 
+              <!-- Codex 注入方式 -->
+              <div class="mode-section">
+                <div class="mode-header">
+                  <n-text strong>{{ $t('enhance.codexInjectionMode') }}</n-text>
+                </div>
+                <n-radio-group v-model:value="codexInjectionMode" size="small" class="injection-mode-radio">
+                  <n-space vertical size="small">
+                    <n-radio value="append">{{ $t('enhance.codexInjectionAppend') }}</n-radio>
+                    <n-radio value="replace">{{ $t('enhance.codexInjectionReplace') }}</n-radio>
+                  </n-space>
+                </n-radio-group>
+                <n-alert v-if="codexInjectionMode === 'replace'" type="warning" :bordered="false">{{ $t('enhance.codexInjectionReplaceWarning') }}</n-alert>
+              </div>
+
+              <n-divider style="margin: 4px 0" />
+
               <!-- Profile 模式 -->
               <div class="mode-section">
                 <div class="mode-header">
@@ -310,6 +326,7 @@ const MAX_TEMPLATES = 5
 const rewriteInput = ref('')
 const codexPromptText = ref('')
 const codexSelectedTemplate = ref(null)
+const codexInjectionMode = ref('append')
 const claudePromptText = ref('')
 const claudeSelectedTemplate = ref(null)
 const opencodePromptText = ref('')
@@ -330,6 +347,11 @@ onMounted(async () => {
   codexPromptText.value = ctfStore.prompts.codex.prompt
   claudePromptText.value = ctfStore.prompts.claude_code.prompt
   opencodePromptText.value = ctfStore.prompts.opencode.prompt
+  if (ctfStore.status?.installed && ['append', 'replace'].includes(ctfStore.status?.injection_mode)) {
+    codexInjectionMode.value = ctfStore.status.injection_mode
+  } else if (ctfStore.status?.global_installed && ['append', 'replace'].includes(ctfStore.status?.global_injection_mode)) {
+    codexInjectionMode.value = ctfStore.status.global_injection_mode
+  }
 
   // 用 is_default 判断是否匹配默认模板，选中对应模板名
   for (const tool of ['codex', 'claude_code', 'opencode']) {
@@ -458,7 +480,7 @@ async function handleResetPrompt(tool) {
 // ─── CTF 安装/卸载 ──────────────────────────────────────
 
 async function handleInstall() {
-  const result = await ctfStore.install()
+  const result = await ctfStore.install(codexInjectionMode.value)
   message[result.success ? 'success' : 'error'](result.message)
 }
 
@@ -476,7 +498,7 @@ async function handleUninstall() {
 }
 
 async function handleInstallGlobal() {
-  const result = await ctfStore.installGlobal()
+  const result = await ctfStore.installGlobal(codexInjectionMode.value)
   message[result.success ? 'success' : 'error'](result.message)
 }
 
@@ -602,6 +624,10 @@ code {
   align-items: center;
   gap: 8px;
   margin-bottom: 8px;
+}
+
+.injection-mode-radio {
+  margin-top: 4px;
 }
 
 .tab-label {

@@ -42,7 +42,16 @@ Thumbs.db
 htmlcov/
 
 # Project specific
+.run/
+*.log
+*.jsonl
+*.sqlite
+*.sqlite3
+*.db
+.env
+.env.*
 *.bak
 node_modules/
 web-logs/
 docs/plans/
+.wrangler/

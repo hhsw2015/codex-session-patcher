@@ -69,8 +69,11 @@ def clean_session_jsonl(
         if not content or not detector.detect(content):
             continue
         if msg.get('type') == 'event_msg':
-            if refusal_groups:
+            if refusal_groups and lines[refusal_groups[-1][0]].get('type') != 'event_msg':
                 refusal_groups[-1][1].append(msg_idx)
+            else:
+                # 历史 Codex 会话可能只有 event_msg，没有对应 response_item。
+                refusal_groups.append((msg_idx, []))
             companion_set.add(msg_idx)
         else:
             refusal_groups.append((msg_idx, []))

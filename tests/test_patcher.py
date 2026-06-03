@@ -21,6 +21,8 @@ from codex_patcher import (
     SessionNotFoundError,
     SessionParseError
 )
+from codex_session_patcher.core.formats import SessionFormat, get_format_strategy
+from codex_session_patcher.core.patcher import clean_session_jsonl
 
 
 # =============================================================================
@@ -251,6 +253,104 @@ class TestSessionParser:
 
         assert modified is False
         assert len(changes) == 0
+
+    def test_clean_jsonl_replaces_event_msg_without_response_item(self):
+        """历史 Codex 会话只有 event_msg 时也应清理拒绝内容"""
+        lines = [
+            {"type": "user_message", "content": "请继续分析本地测试项目"},
+            {
+                "type": "event_msg",
+                "payload": {
+                    "type": "agent_message",
+                    "message": "抱歉，我无法帮助您完成这个请求。",
+                },
+            },
+        ]
+
+        cleaned, modified, changes = clean_session_jsonl(
+            lines,
+            RefusalDetector(),
+            show_content=True,
+            mock_response="已替换为授权测试说明",
+            session_format=SessionFormat.CODEX,
+        )
+
+        strategy = get_format_strategy(SessionFormat.CODEX)
+        assert modified is True
+        assert len(changes) == 1
+        assert changes[0].line_num == 2
+        assert strategy.extract_text_content(cleaned[1]) == "已替换为授权测试说明"
+
+    def test_clean_jsonl_keeps_consecutive_event_msg_only_refusals_selectable(self):
+        """连续 event_msg-only 拒绝应按各自行号独立清理"""
+        lines = [
+            {
+                "type": "event_msg",
+                "payload": {
+                    "type": "agent_message",
+                    "message": "抱歉，我无法处理第一个请求。",
+                },
+            },
+            {
+                "type": "event_msg",
+                "payload": {
+                    "type": "agent_message",
+                    "message": "抱歉，我无法处理第二个请求。",
+                },
+            },
+        ]
+
+        cleaned, modified, changes = clean_session_jsonl(
+            lines,
+            RefusalDetector(),
+            show_content=True,
+            mock_response="已替换第二条",
+            session_format=SessionFormat.CODEX,
+            selected_lines=[2],
+        )
+
+        strategy = get_format_strategy(SessionFormat.CODEX)
+        assert modified is True
+        assert len(changes) == 1
+        assert changes[0].line_num == 2
+        assert strategy.extract_text_content(cleaned[0]) == "抱歉，我无法处理第一个请求。"
+        assert strategy.extract_text_content(cleaned[1]) == "已替换第二条"
+
+    def test_preview_session_lists_consecutive_event_msg_only_refusals_separately(self, tmp_path):
+        """预览连续 event_msg-only 拒绝时应显示独立行号"""
+        from web.backend.api import preview_session
+
+        session_file = tmp_path / "session.jsonl"
+        lines = [
+            {
+                "type": "event_msg",
+                "payload": {
+                    "type": "agent_message",
+                    "message": "抱歉，我无法处理第一个请求。",
+                },
+            },
+            {
+                "type": "event_msg",
+                "payload": {
+                    "type": "agent_message",
+                    "message": "抱歉，我无法处理第二个请求。",
+                },
+            },
+        ]
+        session_file.write_text(
+            "\n".join(json.dumps(line, ensure_ascii=False) for line in lines),
+            encoding="utf-8",
+        )
+
+        result = preview_session(
+            str(session_file),
+            mock_response="预览替换",
+            session_format=SessionFormat.CODEX,
+        )
+
+        assert result.has_changes is True
+        assert [change.line_num for change in result.changes] == [1, 2]
+        assert [change.line_nums for change in result.changes] == [[1], [2]]
 
 
 # =============================================================================
