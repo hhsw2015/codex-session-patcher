@@ -366,8 +366,9 @@ PATCHES = [
         "id": 12,
         "name": "破坏性命令检测 (Bash)",
         "layer": "代码",
-        "desc": "PZA 表危险命令拦截器 → 永远 return null",
+        "desc": "PZA 表危险命令拦截器 → 永远 return null (v2.1.157+ 上游已重写, 此 patch 无对象)",
         "special": "danger_table",
+        "obsolete": True,
     },
     {
         "id": 13,
@@ -463,7 +464,7 @@ def find_all_patch_locations(data):
         elif p.get("special") == "force_v0_true":
             # 强制 dynamic-workflow 入口函数返回 true (函数名 minified, 用结构特征)
             rx = re.compile(
-                rb'function (\w{1,5})\(\)\{if\(\w{1,5}\(\)\)return!1;if\(!\w{1,5}\(\)\)return!1;let\{available:\w,defaultOn:\w\}=[\w$]+\(\);if\(![\w$]+\)return!1;return [\w$]+\(\)\?\?[\w$]+\}'
+                rb'function ([\w$]{1,8})\(\)\{if\([\w$]{1,8}\(\)\)return!1;if\(![\w$]{1,8}\(\)\)return!1;let\{available:\w,defaultOn:\w\}=[\w$]+\(\);if\(![\w$]+\)return!1;return [\w$]+\(\)\?\?[\w$]+\}'
             )
             for m in rx.finditer(data):
                 orig = m.group(0)
@@ -624,7 +625,7 @@ def count_patch_status(data: bytes) -> dict:
             continue
         elif p.get("special") == "force_v0_true":
             n = len(re.findall(
-                rb'function \w{1,5}\(\)\{if\(\w{1,5}\(\)\)return!1;if\(!\w{1,5}\(\)\)return!1;let\{available:\w,defaultOn:\w\}=[\w$]+\(\);if\(![\w$]+\)return!1;return [\w$]+\(\)\?\?[\w$]+\}',
+                rb'function [\w$]{1,8}\(\)\{if\([\w$]{1,8}\(\)\)return!1;if\(![\w$]{1,8}\(\)\)return!1;let\{available:\w,defaultOn:\w\}=[\w$]+\(\);if\(![\w$]+\)return!1;return [\w$]+\(\)\?\?[\w$]+\}',
                 data,
             ))
             status[p["id"]] = "pending" if n > 0 else "applied"
@@ -1752,11 +1753,15 @@ def dry_run_check(exe_path: str) -> dict:
         if p.get("special") == "danger_table_skip":
             continue
         hits = len(by_pid.get(p["id"], []))
-        # anchor 不在 = 已 patch 或不存在；hits > 0 = 可应用；hits = 0 但 anchor 还在 = 失效
-        if status_map.get(p["id"]) == "applied":
-            state = "already_applied"
-        elif hits > 0:
+        # 状态判定:
+        # - applicable: hits > 0, 可以 patch
+        # - already_applied: 标准 anchor 已被替换
+        # - obsolete: 标记为已被上游移除的 patch (PATCHES 中显式 obsolete=True)
+        # - broken: anchor 还在但 tail 找不到 (结构变更, 需更新 patcher)
+        if hits > 0:
             state = "applicable"
+        elif status_map.get(p["id"]) == "applied":
+            state = "obsolete" if p.get("obsolete") else "already_applied"
         else:
             state = "broken"
         result[p["id"]] = {
@@ -2220,10 +2225,12 @@ def silent_check():
     applicable = sum(1 for r in results.values() if r["state"] == "applicable")
     already = sum(1 for r in results.values() if r["state"] == "already_applied")
     broken = sum(1 for r in results.values() if r["state"] == "broken")
+    obsolete = sum(1 for r in results.values() if r["state"] == "obsolete")
 
     state_label = {
         "applicable": "\033[33m✓ 可应用\033[0m",
         "already_applied": "\033[32m已 patch\033[0m",
+        "obsolete": "\033[36m上游已移除\033[0m",
         "broken": "\033[31m✗ 失效 (新版结构变更)\033[0m",
     }
 
@@ -2247,7 +2254,10 @@ def silent_check():
         print(f"{pid:<4}{_pad(layer, 8)}{_pad(name, 36)}{hits:<6} {st}")
 
     print()
-    print(f"汇总: 可应用 {applicable}, 已 patch {already}, 失效 {broken}")
+    summary = f"汇总: 可应用 {applicable}, 已 patch {already}, 失效 {broken}"
+    if obsolete > 0:
+        summary += f", 上游已移除 {obsolete}"
+    print(summary)
 
     if broken > 0:
         script_dir = os.path.dirname(os.path.abspath(__file__))
