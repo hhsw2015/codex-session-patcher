@@ -1777,7 +1777,7 @@ def dry_run_check(exe_path: str) -> dict:
 
 
 def cleanup_old_baks(current_exe: str) -> list:
-    """删除非当前版本的 .bak 和锁残留文件。返回已删除文件列表。"""
+    """删除非当前版本的 .bak、锁残留、旧版本 binary。返回已删除文件列表。"""
     versions_dir = os.path.dirname(current_exe)
     current_basename = os.path.basename(current_exe)
     current_bak = current_basename + ".bak"
@@ -1787,7 +1787,14 @@ def cleanup_old_baks(current_exe: str) -> list:
     for name in os.listdir(versions_dir):
         is_old_bak = name.endswith(".bak") and name != current_bak
         is_lock = ".locked-" in name or name.endswith(".locked-by-running")
-        if not (is_old_bak or is_lock):
+        # 旧版本 binary: 不是当前版本, 不是其 .bak, 也不是 lock 残留
+        is_old_version = (
+            name != current_basename
+            and name != current_bak
+            and not name.endswith(".bak")
+            and ".locked-" not in name
+        )
+        if not (is_old_bak or is_lock or is_old_version):
             continue
         path = os.path.join(versions_dir, name)
         try:
