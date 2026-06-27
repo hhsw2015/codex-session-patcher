@@ -488,9 +488,12 @@ def find_all_patch_locations(data):
                     }
                 )
         elif p.get("special") == "er_no_downgrade":
-            # if(T==="xhigh"&&!VcH(H))return"high";  -- VcH 名字会变, 用通配
+            # xhigh→high 降级判定。多种形式:
+            #   if(T==="xhigh"&&!VcH(H))return"high";   (旧版)
+            #   if(i==="xhigh"&&!Zte(e))i="high";       (新版赋值形式)
+            # 通配两种, 全部替换为等长空操作
             rx = re.compile(
-                rb'if\(([\w$]{1,5})==="xhigh"&&!([\w$]{1,5})\(([\w$]{1,5})\)\)return"high";'
+                rb'if\([\w$]{1,8}==="xhigh"&&![\w$]{1,8}\([\w$]{1,8}\)\)(?:return"high";|[\w$]{1,8}="high";)'
             )
             for m in rx.finditer(data):
                 orig = m.group(0)
@@ -631,7 +634,7 @@ def count_patch_status(data: bytes) -> dict:
             status[p["id"]] = "pending" if n > 0 else "applied"
         elif p.get("special") == "er_no_downgrade":
             n = len(re.findall(
-                rb'if\([\w$]{1,5}==="xhigh"&&![\w$]{1,5}\([\w$]{1,5}\)\)return"high";',
+                rb'if\([\w$]{1,8}==="xhigh"&&![\w$]{1,8}\([\w$]{1,8}\)\)(?:return"high";|[\w$]{1,8}="high";)',
                 data,
             ))
             status[p["id"]] = "pending" if n > 0 else "applied"
