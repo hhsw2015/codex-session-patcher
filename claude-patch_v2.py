@@ -387,13 +387,10 @@ PATCHES = [
         "tail_search_max": 600,
         "include_tail": True,
     },
-    # #15 已移除: 权限拒绝行为约束 -- 这是"用户拒绝模型后模型要遵从"的指令,
-    # 移除会导致模型绕过用户的拒绝决定, 与目标矛盾。保留。
-    # #16 已移除: Auto mode 破坏限制 -- 保护用户免受模型自主破坏操作, 用户未下指令
-    # #17 已移除: 数据泄露限制 -- 保护用户数据不被模型自主泄露, 用户未下指令
-    # #18 已移除: Blind Apply/Logging/TLS -- 保护用户生产环境, 用户未下指令
+    # 历史移除: 权限拒绝行为约束/Auto mode 破坏限制/数据泄露限制/Blind Apply
+    # /dangerous_shell_prefix — 均保护用户免受模型自主操作, 保留不 patch。
     {
-        "id": 19,
+        "id": 15,
         "name": "AppleScript 反绕过",
         "layer": "提示词",
         "desc": "禁止用 AppleScript/System Events/shell 模拟点击",
@@ -403,49 +400,68 @@ PATCHES = [
         "include_tail": True,
     },
     {
-        "id": 24,
+        "id": 16,
         "name": "v0() 强制 dynamic workflows 启用",
         "layer": "代码",
         "desc": "v0() 直接返回 true, 绕过 disableWorkflows/feature flag/settings 整条判定链",
         "special": "force_v0_true",
     },
     {
-        "id": 26,
+        "id": 17,
         "name": "er() xhigh 不降级",
         "layer": "代码",
         "desc": "去掉 er() 中 xhigh→high 降级逻辑, 让 ultracode 状态在 /effort 显示正确",
         "special": "er_no_downgrade",
     },
     {
-        "id": 27,
+        "id": 18,
         "name": "HM 模型归一化兼容点格式 (4.7=4-7)",
         "layer": "代码",
         "desc": "HM() includes 子串匹配改正则, 让 claude-opus-4.X 等点格式被正确归一化为 4-X",
         "special": "hm_normalize_dot",
     },
     {
-        "id": 28,
+        "id": 19,
         "name": "China 指纹 eca 中和",
         "layer": "代码",
         "desc": "eca(e) 恒返回 `Today's date is ${e}.` — 断掉针对中国用户的 prompt 指纹注入",
         "special": "kill_china_fp_eca",
     },
     {
-        "id": 29,
+        "id": 20,
         "name": "China 指纹 ddp 二防",
         "layer": "代码",
         "desc": "ddp() → return null — 上游断链兜底 (代理/时区/域名/lab 检测结果全丢弃)",
         "special": "kill_china_fp_ddp",
     },
     {
-        "id": 30,
+        "id": 21,
         "name": "China 指纹 pdp 三防",
         "layer": "代码",
         "desc": "pdp(e,t) → return \"'\" — 撇号恒 ASCII 兜底 (拒绝 4 态 Unicode 变体)",
         "special": "kill_china_fp_pdp",
     },
-    # #20 已移除: dangerous_shell_prefix -- 保护用户免受恶意 repo 注入,
-    # 不属于"模型拒绝用户指令", 保留。
+    {
+        "id": 22,
+        "name": "Remote Control sdk-url 白名单解除",
+        "layer": "代码",
+        "desc": "b_c(e) → return null — 允许任意 --sdk-url host (非官方 endpoint / 代理均可)",
+        "special": "unlock_sdk_url_host",
+    },
+    {
+        "id": 23,
+        "name": "Remote Control primary gate 解除",
+        "layer": "代码",
+        "desc": "Yen() → return kc() — 保留登录检查, 去除 base URL 官方性判定",
+        "special": "unlock_remote_gate",
+    },
+    {
+        "id": 24,
+        "name": "Remote Control settings override",
+        "layer": "代码",
+        "desc": "Jen() → return!1 — 忽略 disableRemoteControl 本地/企业 settings",
+        "special": "unlock_disable_rc",
+    },
 ]
 
 
@@ -663,6 +679,102 @@ def find_all_patch_locations(data):
                         "new": new,
                     }
                 )
+        elif p.get("special") == "unlock_sdk_url_host":
+            # 中和 b_c(e): 恒 return null — 允许任意 --sdk-url host
+            # 原: function <fn>(e){let t;try{t=new URL(e)}catch{return`could not parse...`}
+            #     if(<Dff>.has(t.hostname)){if(t.protocol!=="wss:"&&t.protocol!=="https:")return`scheme...`;return null}
+            #     return`host...`}
+            rx = re.compile(
+                rb'function ([\w$]{1,8})\(e\)\{let t;try\{t=new URL\(e\)\}catch\{return`could not parse \$\{[\w$]{1,8}\(e\)\} as a URL`\}if\([\w$]{1,8}\.has\(t\.hostname\)\)\{if\(t\.protocol!=="wss:"&&t\.protocol!=="https:"\)return`scheme \$\{[\w$]{1,8}\(t\.protocol\)\} is not permitted for host \$\{[\w$]{1,8}\(t\.hostname\)\}; only wss:// and https:// are accepted`;return null\}return`host \$\{[\w$]{1,8}\(t\.hostname\)\} is not an approved Anthropic endpoint`\}'
+            )
+            for m in rx.finditer(data):
+                orig = m.group(0)
+                fname = m.group(1)
+                new_body = b"function " + fname + b"(e){return null"
+                new_tail = b"}"
+                pad_len = len(orig) - len(new_body) - len(new_tail)
+                if pad_len < 0:
+                    continue
+                if pad_len >= 4:
+                    pad = b"/*" + b" " * (pad_len - 4) + b"*/"
+                else:
+                    pad = b" " * pad_len
+                new = new_body + pad + new_tail
+                if len(new) != len(orig):
+                    continue
+                results.append(
+                    {
+                        "patch_id": p["id"],
+                        "name": p["name"],
+                        "offset": m.start(),
+                        "length": len(orig),
+                        "old": orig,
+                        "new": new,
+                    }
+                )
+        elif p.get("special") == "unlock_remote_gate":
+            # 中和 Yen(): return kc() — 保留登录检查, 去除官方 endpoint 判定
+            # 原: function <fn>(){if(!<kc>())return!1;return!!<Ne>.ANTHROPIC_UNIX_SOCKET||<Crt>()}
+            rx = re.compile(
+                rb'function ([\w$]{1,8})\(\)\{if\(!([\w$]{1,8})\(\)\)return!1;return!![\w$.]{1,20}ANTHROPIC_UNIX_SOCKET\|\|[\w$]{1,8}\(\)\}'
+            )
+            for m in rx.finditer(data):
+                orig = m.group(0)
+                fname = m.group(1)
+                kc_name = m.group(2)
+                new_body = b"function " + fname + b"(){return " + kc_name + b"()"
+                new_tail = b"}"
+                pad_len = len(orig) - len(new_body) - len(new_tail)
+                if pad_len < 0:
+                    continue
+                if pad_len >= 4:
+                    pad = b"/*" + b" " * (pad_len - 4) + b"*/"
+                else:
+                    pad = b" " * pad_len
+                new = new_body + pad + new_tail
+                if len(new) != len(orig):
+                    continue
+                results.append(
+                    {
+                        "patch_id": p["id"],
+                        "name": p["name"],
+                        "offset": m.start(),
+                        "length": len(orig),
+                        "old": orig,
+                        "new": new,
+                    }
+                )
+        elif p.get("special") == "unlock_disable_rc":
+            # 中和 Jen(): return!1 — 忽略 disableRemoteControl setting
+            # 原: function <fn>(){return <gH>()?.settings.disableRemoteControl===!0}
+            rx = re.compile(
+                rb'function ([\w$]{1,8})\(\)\{return [\w$]{1,8}\(\)\?\.settings\.disableRemoteControl===!0\}'
+            )
+            for m in rx.finditer(data):
+                orig = m.group(0)
+                fname = m.group(1)
+                new_body = b"function " + fname + b"(){return!1"
+                new_tail = b"}"
+                pad_len = len(orig) - len(new_body) - len(new_tail)
+                if pad_len < 0:
+                    continue
+                if pad_len >= 4:
+                    pad = b"/*" + b" " * (pad_len - 4) + b"*/"
+                else:
+                    pad = b" " * pad_len
+                new = new_body + pad + new_tail
+                if len(new) != len(orig):
+                    continue
+                results.append(
+                    {
+                        "patch_id": p["id"],
+                        "name": p["name"],
+                        "offset": m.start(),
+                        "length": len(orig),
+                        "old": orig,
+                        "new": new,
+                    }
+                )
         else:
             anchor = p["anchor"]
             i = 0
@@ -770,6 +882,24 @@ def count_patch_status(data: bytes) -> dict:
         elif p.get("special") == "kill_china_fp_pdp":
             n = len(re.findall(
                 rb'if\(!e&&!t\)return"\'";if\(e&&!t\)return"\\u2019";if\(!e&&t\)return"\\u02BC"',
+                data,
+            ))
+            status[p["id"]] = "pending" if n > 0 else "applied"
+        elif p.get("special") == "unlock_sdk_url_host":
+            n = len(re.findall(
+                rb'is not an approved Anthropic endpoint`\}',
+                data,
+            ))
+            status[p["id"]] = "pending" if n > 0 else "applied"
+        elif p.get("special") == "unlock_remote_gate":
+            n = len(re.findall(
+                rb'return!![\w$.]{1,20}ANTHROPIC_UNIX_SOCKET\|\|[\w$]{1,8}\(\)\}',
+                data,
+            ))
+            status[p["id"]] = "pending" if n > 0 else "applied"
+        elif p.get("special") == "unlock_disable_rc":
+            n = len(re.findall(
+                rb'return [\w$]{1,8}\(\)\?\.settings\.disableRemoteControl===!0\}',
                 data,
             ))
             status[p["id"]] = "pending" if n > 0 else "applied"
