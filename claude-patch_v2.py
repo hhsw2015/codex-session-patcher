@@ -423,6 +423,27 @@ PATCHES = [
         "desc": "HM() includes 子串匹配改正则, 让 claude-opus-4.X 等点格式被正确归一化为 4-X",
         "special": "hm_normalize_dot",
     },
+    {
+        "id": 28,
+        "name": "China 指纹 eca 中和",
+        "layer": "代码",
+        "desc": "eca(e) 恒返回 `Today's date is ${e}.` — 断掉针对中国用户的 prompt 指纹注入",
+        "special": "kill_china_fp_eca",
+    },
+    {
+        "id": 29,
+        "name": "China 指纹 ddp 二防",
+        "layer": "代码",
+        "desc": "ddp() → return null — 上游断链兜底 (代理/时区/域名/lab 检测结果全丢弃)",
+        "special": "kill_china_fp_ddp",
+    },
+    {
+        "id": 30,
+        "name": "China 指纹 pdp 三防",
+        "layer": "代码",
+        "desc": "pdp(e,t) → return \"'\" — 撇号恒 ASCII 兜底 (拒绝 4 态 Unicode 变体)",
+        "special": "kill_china_fp_pdp",
+    },
     # #20 已移除: dangerous_shell_prefix -- 保护用户免受恶意 repo 注入,
     # 不属于"模型拒绝用户指令", 保留。
 ]
@@ -549,6 +570,99 @@ def find_all_patch_locations(data):
                             "new": new,
                         }
                     )
+        elif p.get("special") == "kill_china_fp_eca":
+            # 中和 eca(e): 恒输出 ASCII 撇号 + ISO 日期, 断掉指纹输出通道
+            # 原: function <fn>(e){let t=<fn>(),n=<fn>(t?.known??!1,t?.labKw??!1),
+            #     r=t?.cnTZ?e.replaceAll("-","/"):e;return`Today${n}s date is ${r}.`}
+            # 新: function <fn>(e){return`Today's date is ${e}.`/*<pad>*/}
+            rx = re.compile(
+                rb'function ([\w$]{1,8})\(e\)\{let t=[\w$]{1,8}\(\),n=[\w$]{1,8}\(t\?\.known\?\?!1,t\?\.labKw\?\?!1\),r=t\?\.cnTZ\?e\.replaceAll\("-","/"\):e;return`Today\$\{n\}s date is \$\{r\}\.`\}'
+            )
+            for m in rx.finditer(data):
+                orig = m.group(0)
+                fname = m.group(1)
+                new_body = b"function " + fname + b"(e){return`Today's date is ${e}.`"
+                new_tail = b"}"
+                pad_len = len(orig) - len(new_body) - len(new_tail)
+                if pad_len < 0:
+                    continue
+                if pad_len >= 4:
+                    pad = b"/*" + b" " * (pad_len - 4) + b"*/"
+                else:
+                    pad = b" " * pad_len
+                new = new_body + pad + new_tail
+                if len(new) != len(orig):
+                    continue
+                results.append(
+                    {
+                        "patch_id": p["id"],
+                        "name": p["name"],
+                        "offset": m.start(),
+                        "length": len(orig),
+                        "old": orig,
+                        "new": new,
+                    }
+                )
+        elif p.get("special") == "kill_china_fp_ddp":
+            # 中和 ddp(): 恒 return null, 二防线
+            rx = re.compile(
+                rb'function ([\w$]{1,8})\(\)\{if\([\w$]{1,8}\(\)\)return null;let e=[\w$]{1,8}\(\),t=[\w$]{1,8}\(\),n=t==="Asia/Shanghai"\|\|t==="Asia/Urumqi";if\(!e\)return\{known:!1,labKw:!1,cnTZ:n,host:null\};return\{known:[\w$]{1,8}\(\)\.some\(\(r\)=>e===r\|\|e\.endsWith\("\."\+r\)\),labKw:[\w$]{1,8}\(\)\.some\(\(r\)=>e\.includes\(r\)\),cnTZ:n,host:e\}\}'
+            )
+            for m in rx.finditer(data):
+                orig = m.group(0)
+                fname = m.group(1)
+                new_body = b"function " + fname + b"(){return null"
+                new_tail = b"}"
+                pad_len = len(orig) - len(new_body) - len(new_tail)
+                if pad_len < 0:
+                    continue
+                if pad_len >= 4:
+                    pad = b"/*" + b" " * (pad_len - 4) + b"*/"
+                else:
+                    pad = b" " * pad_len
+                new = new_body + pad + new_tail
+                if len(new) != len(orig):
+                    continue
+                results.append(
+                    {
+                        "patch_id": p["id"],
+                        "name": p["name"],
+                        "offset": m.start(),
+                        "length": len(orig),
+                        "old": orig,
+                        "new": new,
+                    }
+                )
+        elif p.get("special") == "kill_china_fp_pdp":
+            # 中和 pdp(e,t): 恒返回 ASCII 撇号, 三防线
+            rx = re.compile(
+                rb'function ([\w$]{1,8})\(e,t\)\{if\(!e&&!t\)return"\'";if\(e&&!t\)return"\\u2019";if\(!e&&t\)return"\\u02BC";return"\\u02B9"\}'
+            )
+            for m in rx.finditer(data):
+                orig = m.group(0)
+                fname = m.group(1)
+                new_body = b"function " + fname + b"(e,t){return\"'\""
+                new_tail = b"}"
+                pad_len = len(orig) - len(new_body) - len(new_tail)
+                if pad_len < 0:
+                    continue
+                if pad_len >= 4:
+                    pad = b"/*" + b" " * (pad_len - 4) + b"*/"
+                else:
+                    pad = b" " * pad_len
+                new = new_body + pad + new_tail
+                if len(new) != len(orig):
+                    continue
+                results.append(
+                    {
+                        "patch_id": p["id"],
+                        "name": p["name"],
+                        "offset": m.start(),
+                        "length": len(orig),
+                        "old": orig,
+                        "new": new,
+                    }
+                )
         else:
             anchor = p["anchor"]
             i = 0
@@ -640,6 +754,24 @@ def count_patch_status(data: bytes) -> dict:
             status[p["id"]] = "pending" if n > 0 else "applied"
         elif p.get("special") == "hm_normalize_dot":
             n = len(re.findall(rb'\w\.includes\("claude-opus-4-7"\)', data))
+            status[p["id"]] = "pending" if n > 0 else "applied"
+        elif p.get("special") == "kill_china_fp_eca":
+            n = len(re.findall(
+                rb'r=t\?\.cnTZ\?e\.replaceAll\("-","/"\):e;return`Today\$\{n\}s date is',
+                data,
+            ))
+            status[p["id"]] = "pending" if n > 0 else "applied"
+        elif p.get("special") == "kill_china_fp_ddp":
+            n = len(re.findall(
+                rb'n=t==="Asia/Shanghai"\|\|t==="Asia/Urumqi";if\(!e\)return\{known:!1,labKw:!1,cnTZ:n',
+                data,
+            ))
+            status[p["id"]] = "pending" if n > 0 else "applied"
+        elif p.get("special") == "kill_china_fp_pdp":
+            n = len(re.findall(
+                rb'if\(!e&&!t\)return"\'";if\(e&&!t\)return"\\u2019";if\(!e&&t\)return"\\u02BC"',
+                data,
+            ))
             status[p["id"]] = "pending" if n > 0 else "applied"
         else:
             n = data.count(p["anchor"])
