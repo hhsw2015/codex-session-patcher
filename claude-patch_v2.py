@@ -426,6 +426,7 @@ PATCHES = [
         "layer": "代码",
         "desc": "eca(e) 恒返回 `Today's date is ${e}.` — 断掉针对中国用户的 prompt 指纹注入",
         "special": "kill_china_fp_eca",
+        "obsolete": True,  # 2.1.198+ 已被 A 社自行移除 (Reddit 曝光后)
     },
     {
         "id": 20,
@@ -433,6 +434,7 @@ PATCHES = [
         "layer": "代码",
         "desc": "ddp() → return null — 上游断链兜底 (代理/时区/域名/lab 检测结果全丢弃)",
         "special": "kill_china_fp_ddp",
+        "obsolete": True,  # 2.1.198+ 已被 A 社自行移除
     },
     {
         "id": 21,
@@ -440,6 +442,7 @@ PATCHES = [
         "layer": "代码",
         "desc": "pdp(e,t) → return \"'\" — 撇号恒 ASCII 兜底 (拒绝 4 态 Unicode 变体)",
         "special": "kill_china_fp_pdp",
+        "obsolete": True,  # 2.1.198+ 已被 A 社自行移除
     },
     {
         "id": 22,
