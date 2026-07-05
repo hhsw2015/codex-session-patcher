@@ -465,6 +465,13 @@ PATCHES = [
         "desc": "Jen() → return!1 — 忽略 disableRemoteControl 本地/企业 settings",
         "special": "unlock_disable_rc",
     },
+    {
+        "id": 25,
+        "name": "1h prompt cache 强制启用",
+        "layer": "代码",
+        "desc": "gKe(e) 恒返 true (保留 FORCE_PROMPT_CACHING_5M 逃生阀) — 所有 querySource 走 1h 缓存",
+        "special": "force_1h_cache",
+    },
 ]
 
 
@@ -778,6 +785,46 @@ def find_all_patch_locations(data):
                         "new": new,
                     }
                 )
+        elif p.get("special") == "force_1h_cache":
+            # 强制 1h prompt cache: gKe(e) 恒返 true (保留 FORCE_PROMPT_CACHING_5M 逃生阀)
+            # 原: function <fn>(e){if(it(process.env.FORCE_PROMPT_CACHING_5M))return!1;
+            #     if(it(process.env.ENABLE_PROMPT_CACHING_1H)||mr()==="bedrock"&&it(process.env.ENABLE_PROMPT_CACHING_1H_BEDROCK))return!0;
+            #     if(!<fn>()||<obj>.isUsingOverage)return!1;
+            #     let t=<fn>();if(t===null)t=<nt>("tengu_prompt_cache_1h_config",{allowlist:[...]}).allowlist??[],<fn>(t);
+            #     return e!==void 0&&t.some((n)=>n.endsWith("*")?e.startsWith(n.slice(0,-1)):e===n)}
+            # 新: function <fn>(e){return!it(process.env.FORCE_PROMPT_CACHING_5M)/*<pad>*/}
+            rx = re.compile(
+                rb'function ([\w$]{1,8})\(e\)\{if\(it\(process\.env\.FORCE_PROMPT_CACHING_5M\)\)return!1;'
+                rb'if\(it\(process\.env\.ENABLE_PROMPT_CACHING_1H\)\|\|mr\(\)==="bedrock"&&it\(process\.env\.ENABLE_PROMPT_CACHING_1H_BEDROCK\)\)return!0;'
+                rb'if\(![\w$]{1,8}\(\)\|\|[\w$]{1,8}\.isUsingOverage\)return!1;'
+                rb'let t=[\w$]{1,8}\(\);if\(t===null\)t=[\w$]{1,4}\("tengu_prompt_cache_1h_config",\{allowlist:\[[^\]]{1,300}\]\}\)\.allowlist\?\?\[\],[\w$]{1,8}\(t\);'
+                rb'return e!==void 0&&t\.some\(\([\w$]{1,3}\)=>[\w$]{1,3}\.endsWith\("\*"\)\?e\.startsWith\([\w$]{1,3}\.slice\(0,-1\)\):e===[\w$]{1,3}\)\}'
+            )
+            for m in rx.finditer(data):
+                orig = m.group(0)
+                fname = m.group(1)
+                new_body = b"function " + fname + b"(e){return!it(process.env.FORCE_PROMPT_CACHING_5M)"
+                new_tail = b"}"
+                pad_len = len(orig) - len(new_body) - len(new_tail)
+                if pad_len < 0:
+                    continue
+                if pad_len >= 4:
+                    pad = b"/*" + b" " * (pad_len - 4) + b"*/"
+                else:
+                    pad = b" " * pad_len
+                new = new_body + pad + new_tail
+                if len(new) != len(orig):
+                    continue
+                results.append(
+                    {
+                        "patch_id": p["id"],
+                        "name": p["name"],
+                        "offset": m.start(),
+                        "length": len(orig),
+                        "old": orig,
+                        "new": new,
+                    }
+                )
         else:
             anchor = p["anchor"]
             i = 0
@@ -903,6 +950,12 @@ def count_patch_status(data: bytes) -> dict:
         elif p.get("special") == "unlock_disable_rc":
             n = len(re.findall(
                 rb'return [\w$]{1,8}\(\)\?\.settings\.disableRemoteControl===!0\}',
+                data,
+            ))
+            status[p["id"]] = "pending" if n > 0 else "applied"
+        elif p.get("special") == "force_1h_cache":
+            n = len(re.findall(
+                rb'\|\|mr\(\)==="bedrock"&&it\(process\.env\.ENABLE_PROMPT_CACHING_1H_BEDROCK\)\)return!0',
                 data,
             ))
             status[p["id"]] = "pending" if n > 0 else "applied"
@@ -1064,6 +1117,8 @@ REAL_CLAUDE="$(find_real_binary)" || {{ echo "Error: claude binary not found" >&
 
 export CLAUDE_CODE_WORKFLOWS=1
 export DISABLE_GROWTHBOOK=1
+export ENABLE_PROMPT_CACHING_1H=true
+export CLAUDE_CODE_ATTRIBUTION_HEADER=false
 
 if [[ "$1" == "install" || "$1" == "update" ]]; then
     "$REAL_CLAUDE" --model "opus[1m]" "$@"
